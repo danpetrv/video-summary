@@ -954,8 +954,20 @@ async function findOne(dir, prefix, exts) {
   const hit = (await readdir2(dir)).filter((f) => f.startsWith(prefix) && !f.endsWith(".part") && !f.endsWith(".ytdl") && (!exts || exts.some((x) => f.endsWith(x)))).sort();
   return hit.length ? join4(dir, hit[0]) : null;
 }
-async function downloadSubs(url, lang, workDir, run, auto = false) {
-  const r = await run([
+var RETRY_DELAYS_MS = [2000, 5000];
+var defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function runDownload(cmd, run, sleep) {
+  for (let attempt = 0;; attempt++) {
+    const r = await run(cmd);
+    if (r.code === 0)
+      return;
+    if (!/HTTP Error 403/.test(r.stderr) || attempt >= RETRY_DELAYS_MS.length)
+      throw ytdlpError(r.stderr);
+    await sleep(RETRY_DELAYS_MS[attempt]);
+  }
+}
+async function downloadSubs(url, lang, workDir, run, auto = false, sleep = defaultSleep) {
+  await runDownload([
     ...YTDLP_BASE,
     "--skip-download",
     auto ? "--write-auto-subs" : "--write-subs",
@@ -966,18 +978,14 @@ async function downloadSubs(url, lang, workDir, run, auto = false) {
     "-o",
     join4(workDir, "subs.%(ext)s"),
     url
-  ]);
-  if (r.code !== 0)
-    throw ytdlpError(r.stderr);
+  ], run, sleep);
   const f = await findOne(workDir, "subs.", [".vtt", ".srt"]);
   if (!f)
     throw new UserError(`yt-dlp did not download ${lang} subtitles in vtt or srt format`);
   return f;
 }
-async function downloadAudio(url, workDir, run) {
-  const r = await run([...YTDLP_BASE, "-f", "bestaudio/best", "-o", join4(workDir, "src.%(ext)s"), url]);
-  if (r.code !== 0)
-    throw ytdlpError(r.stderr);
+async function downloadAudio(url, workDir, run, sleep = defaultSleep) {
+  await runDownload([...YTDLP_BASE, "-f", "bestaudio/best", "-o", join4(workDir, "src.%(ext)s"), url], run, sleep);
   const f = await findOne(workDir, "src.");
   if (!f)
     throw new UserError("yt-dlp did not download the audio");

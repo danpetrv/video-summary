@@ -1,4 +1,4 @@
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -124,4 +124,61 @@ test("downloadSubs auto: --write-auto-subs instead of --write-subs", async () =>
     ...YTDLP_BASE, "--skip-download", "--write-auto-subs", "--sub-langs", "en-orig", "--sub-format", "vtt/srt/best",
     "-o", join(work, "subs.%(ext)s"), URL,
   ]);
+});
+
+describe("retry on transient HTTP 403", () => {
+  const forbidden = { code: 1, stdout: "", stderr: "ERROR: unable to download video data: HTTP Error 403: Forbidden\n" };
+
+  test("downloadAudio: 403 then success → retried once after 2 s, file returned", async () => {
+    const work = join(tmp, "retry-ok");
+    await Bun.write(join(work, ".keep"), "");
+    const sleeps: number[] = [];
+    let n = 0;
+    const run: Runner = async () => {
+      n++;
+      if (n === 1) return forbidden;
+      writeFileSync(join(work, "src.webm"), "x");
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    expect(await downloadAudio(URL, work, run, async (ms) => void sleeps.push(ms))).toBe(join(work, "src.webm"));
+    expect(n).toBe(2);
+    expect(sleeps).toEqual([2000]);
+  });
+
+  test("downloadAudio: 403 on every attempt → 3 attempts (2 s, 5 s pauses), then the yt-dlp error", async () => {
+    const work = join(tmp, "retry-fail");
+    await Bun.write(join(work, ".keep"), "");
+    const sleeps: number[] = [];
+    let n = 0;
+    const run: Runner = async () => (n++, forbidden);
+    const err = await downloadAudio(URL, work, run, async (ms) => void sleeps.push(ms)).catch((e) => e);
+    expect(err).toBeInstanceOf(UserError);
+    expect(err.message).toBe("yt-dlp: ERROR: unable to download video data: HTTP Error 403: Forbidden");
+    expect(n).toBe(3);
+    expect(sleeps).toEqual([2000, 5000]);
+  });
+
+  test("downloadAudio: a non-403 error is not retried", async () => {
+    const work = join(tmp, "retry-other");
+    await Bun.write(join(work, ".keep"), "");
+    let n = 0;
+    const run: Runner = async () => (n++, { code: 1, stdout: "", stderr: "ERROR: [youtube] x: Private video\n" });
+    const err = await downloadAudio(URL, work, run, async () => {}).catch((e) => e);
+    expect(err.message).toBe("yt-dlp: ERROR: [youtube] x: Private video");
+    expect(n).toBe(1);
+  });
+
+  test("downloadSubs: 403 then success → retried", async () => {
+    const work = join(tmp, "retry-subs");
+    await Bun.write(join(work, ".keep"), "");
+    let n = 0;
+    const run: Runner = async () => {
+      n++;
+      if (n === 1) return forbidden;
+      writeFileSync(join(work, "subs.en.vtt"), "WEBVTT\n");
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    expect(await downloadSubs(URL, "en", work, run, false, async () => {})).toBe(join(work, "subs.en.vtt"));
+    expect(n).toBe(2);
+  });
 });

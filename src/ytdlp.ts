@@ -70,20 +70,35 @@ async function findOne(dir: string, prefix: string, exts?: string[]): Promise<st
 }
 
 /** Path to a .vtt or .srt file: not every site has vtt. */
-export async function downloadSubs(url: string, lang: string, workDir: string, run: Runner, auto = false): Promise<string> {
-  const r = await run([
+/** Pauses before the 2nd and 3rd attempt. YouTube sometimes answers 403 for a moment (PO token / SABR experiments). */
+export const RETRY_DELAYS_MS = [2000, 5000];
+type Sleep = (ms: number) => Promise<void>;
+const defaultSleep: Sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Runs a yt-dlp download; retries only on a transient HTTP 403, other errors fail at once. */
+async function runDownload(cmd: string[], run: Runner, sleep: Sleep): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    const r = await run(cmd);
+    if (r.code === 0) return;
+    if (!/HTTP Error 403/.test(r.stderr) || attempt >= RETRY_DELAYS_MS.length) throw ytdlpError(r.stderr);
+    await sleep(RETRY_DELAYS_MS[attempt]!);
+  }
+}
+
+export async function downloadSubs(
+  url: string, lang: string, workDir: string, run: Runner, auto = false, sleep: Sleep = defaultSleep,
+): Promise<string> {
+  await runDownload([
     ...YTDLP_BASE, "--skip-download", auto ? "--write-auto-subs" : "--write-subs", "--sub-langs", lang, "--sub-format", "vtt/srt/best",
     "-o", join(workDir, "subs.%(ext)s"), url,
-  ]);
-  if (r.code !== 0) throw ytdlpError(r.stderr);
+  ], run, sleep);
   const f = await findOne(workDir, "subs.", [".vtt", ".srt"]);
   if (!f) throw new UserError(`yt-dlp did not download ${lang} subtitles in vtt or srt format`);
   return f;
 }
 
-export async function downloadAudio(url: string, workDir: string, run: Runner): Promise<string> {
-  const r = await run([...YTDLP_BASE, "-f", "bestaudio/best", "-o", join(workDir, "src.%(ext)s"), url]);
-  if (r.code !== 0) throw ytdlpError(r.stderr);
+export async function downloadAudio(url: string, workDir: string, run: Runner, sleep: Sleep = defaultSleep): Promise<string> {
+  await runDownload([...YTDLP_BASE, "-f", "bestaudio/best", "-o", join(workDir, "src.%(ext)s"), url], run, sleep);
   const f = await findOne(workDir, "src.");
   if (!f) throw new UserError("yt-dlp did not download the audio");
   return f;
