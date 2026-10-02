@@ -1,4 +1,5 @@
 import { openAsBlob } from "node:fs";
+import { normalizeLanguage } from "./language";
 import { oneLine } from "../net";
 import { type Fetcher } from "../types";
 import type { ResolvedProvider } from "./presets";
@@ -25,7 +26,7 @@ export function parseWhisperx(json: unknown, provider: string): AsrResult {
     if (!names.has(s.speaker)) names.set(s.speaker, `Speaker ${names.size + 1}`);
     return { ...cue, speaker: names.get(s.speaker)! };
   });
-  return { cues, provider, diarized: names.size > 0, speakers: names.size, language: body.language ?? null };
+  return { cues, provider, diarized: names.size > 0, speakers: names.size, language: normalizeLanguage(body.language) };
 }
 
 export async function transcribeWhisperx(

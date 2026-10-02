@@ -1,4 +1,5 @@
 import { openAsBlob } from "node:fs";
+import { normalizeLanguage } from "./language";
 import { oneLine } from "../net";
 import { type Fetcher, UserError } from "../types";
 import type { ResolvedProvider } from "./presets";
@@ -18,7 +19,7 @@ export async function modelsReachable(url: string, f: Fetcher, key: string | nul
 export function parseVerbose(json: unknown, provider: string): AsrResult {
   const body = json as { language?: string; segments?: Segment[] };
   const cues = (body.segments ?? []).map((s) => ({ start: s.start, end: s.end, text: s.text.trim() }));
-  return { cues, provider, diarized: false, speakers: 0, language: body.language?.toLowerCase() ?? null };
+  return { cues, provider, diarized: false, speakers: 0, language: normalizeLanguage(body.language) };
 }
 
 /** Speaker "A","B" -> "Speaker 1","Speaker 2" by order of first appearance. */
@@ -31,7 +32,7 @@ export function parseDiarized(json: unknown, provider: string): AsrResult {
     if (!names.has(s.speaker)) names.set(s.speaker, `Speaker ${names.size + 1}`);
     return { ...cue, speaker: names.get(s.speaker)! };
   });
-  return { cues, provider, diarized: names.size > 0, speakers: names.size, language: body.language?.toLowerCase() ?? null };
+  return { cues, provider, diarized: names.size > 0, speakers: names.size, language: normalizeLanguage(body.language) };
 }
 
 export async function transcribeOpenAI(
