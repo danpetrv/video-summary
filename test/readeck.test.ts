@@ -55,6 +55,18 @@ test("renderHtml: headings, table, mermaid as code, title escaped", () => {
   expect(h.endsWith("</body></html>")).toBe(true);
 });
 
+test("renderHtml: the header quote is a top-level paragraph with line breaks, later quotes stay blockquotes", () => {
+  // Readeck keeps only readability's best block: with the header in a <blockquote> and the rest in lists,
+  // that block was the header alone (a short summary arrived as 31 words).
+  const md = "# T\n\n> 📺 Chan · 🔗 [watch](https://y)\n> 📖 ~2 min read\n\n## TL;DR\n- a\n- b\n\n## Quotes\n> \"q\"\n";
+  const h = renderHtml(md, "t");
+  expect(h).toContain('<h1>T</h1>\n<p>📺 Chan · 🔗 <a href="https://y">watch</a><br>📖 ~2 min read</p>');
+  expect(h).toContain("<blockquote>\n<p>&quot;q&quot;</p>\n</blockquote>");
+  expect(h.match(/<blockquote>/g)).toHaveLength(1);
+  // no header quote: nothing changes, a quote after a section heading is not taken for the header
+  expect(renderHtml("# T\n\n## S\n> q\n", "t")).toContain("<blockquote>\n<p>q</p>\n</blockquote>");
+});
+
 test("no summary.md -> UserError", async () => {
   rmSync(join(dir, "summary.md"));
   const { f } = readeck();

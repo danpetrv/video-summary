@@ -2748,7 +2748,12 @@ var POLLS = 15;
 var TIMEOUT_MS = 15000;
 var esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 function renderHtml(markdown, title) {
-  const body = k.parse(markdown, { async: false });
+  const tokens = k.lexer(markdown);
+  const section = tokens.findIndex((t) => t.type === "heading" && t.depth > 1);
+  const i = tokens.findIndex((t, n) => t.type === "blockquote" && (section < 0 || n < section));
+  if (i >= 0)
+    tokens.splice(i, 1, ...k.lexer(tokens[i].text, { gfm: true, breaks: true }));
+  const body = k.parser(tokens, { async: false });
   return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title></head><body>${body}</body></html>`;
 }
 

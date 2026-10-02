@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { marked } from "marked";
+import { type Tokens, marked } from "marked";
 import { type ReadeckConfig, keySource, readKey } from "./config";
 import { readMeta, writeMeta } from "./meta";
 import { netErrorTag, oneLine } from "./net";
@@ -20,9 +20,17 @@ const POLLS = 15;
 const TIMEOUT_MS = 15_000;
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-/** Mermaid stays a code block: Readeck strips scripts; the full version is summary.md. */
+/**
+ * Mermaid stays a code block: Readeck strips scripts; the full version is summary.md.
+ * The header quote (before the first section heading) becomes a plain paragraph with line breaks: Readeck keeps
+ * only readability's best block, and when the rest of the summary is lists that block was the header <blockquote>.
+ */
 export function renderHtml(markdown: string, title: string): string {
-  const body = marked.parse(markdown, { async: false });
+  const tokens = marked.lexer(markdown);
+  const section = tokens.findIndex((t) => t.type === "heading" && t.depth > 1);
+  const i = tokens.findIndex((t, n) => t.type === "blockquote" && (section < 0 || n < section));
+  if (i >= 0) tokens.splice(i, 1, ...marked.lexer((tokens[i] as Tokens.Blockquote).text, { gfm: true, breaks: true }));
+  const body = marked.parser(tokens, { async: false });
   return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title></head><body>${body}</body></html>`;
 }
 
