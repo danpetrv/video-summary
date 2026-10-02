@@ -1,0 +1,54 @@
+{
+  "text": [
+    {
+      "start": 0.0,
+      "end": 4.2,
+      "text": " Всем привет, это стрим про миграцию.",
+      "speaker": "SPEAKER_01"
+    },
+    {
+      "start": 4.5,
+      "end": 9.0,
+      "text": " Привет! Начнём с вопросов.",
+      "speaker": "SPEAKER_00"
+    },
+    {
+      "start": 9.3,
+      "end": 15.8,
+      "text": " Первый вопрос про Kubernetes.",
+      "speaker": "SPEAKER_01"
+    },
+    {
+      "start": 16.0,
+      "end": 18.0,
+      "text": " Спасибо."
+    }
+  ],
+  "language": "ru",
+  "segments": [
+    {
+      "start": 0.0,
+      "end": 4.2,
+      "text": " Всем привет, это стрим про миграцию.",
+      "speaker": "SPEAKER_01"
+    },
+    {
+      "start": 4.5,
+      "end": 9.0,
+      "text": " Привет! Начнём с вопросов.",
+      "speaker": "SPEAKER_00"
+    },
+    {
+      "start": 9.3,
+      "end": 15.8,
+      "text": " Первый вопрос про Kubernetes.",
+      "speaker": "SPEAKER_01"
+    },
+    {
+      "start": 16.0,
+      "end": 18.0,
+      "text": " Спасибо."
+    }
+  ],
+  "word_segments": []
+}

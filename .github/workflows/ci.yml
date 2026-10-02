@@ -1,0 +1,37 @@
+name: ci
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - run: bun test
+      - run: bunx tsc --noEmit
+      - run: bun run check:bun-free
+      - run: bun run build && git diff --exit-code skills/
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Smoke (node 20)
+        run: |
+          node skills/video-summary/scripts/video-summary.mjs config path
+          node skills/video-summary/scripts/video-summary.mjs check | node -e 'JSON.parse(require("fs").readFileSync(0, "utf8"))'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Smoke (node 22)
+        run: |
+          node skills/video-summary/scripts/video-summary.mjs config path
+          node skills/video-summary/scripts/video-summary.mjs check | node -e 'JSON.parse(require("fs").readFileSync(0, "utf8"))'

@@ -1,0 +1,16 @@
+{
+  "name": "video-summary",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "build": "bun build src/main.ts --target=node --format=esm --outfile skills/video-summary/scripts/video-summary.mjs",
+    "check:bun-free": "sh scripts/check-bun-free.sh"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "@types/node": "^26.6.4",
+    "marked": "^18.0.14",
+    "typescript": "^7.0.2"
+  }
+}

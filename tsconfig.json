@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "types": ["node", "bun"],
+    "skipLibCheck": true,
+    "noUncheckedIndexedAccess": true
+  },
+  "include": ["src", "test"]
+}

@@ -1,0 +1,44 @@
+{
+  "task": "transcribe",
+  "language": "English",
+  "duration": 30.000001024,
+  "text": "We're no strangers to love, you know the rules and so do I I feel commitments what I'm thinking of, you wouldn't get this from any other guy I just wanna tell you how I'm feeling, gotta make you understand",
+  "segments": [
+    {
+      "id": 0,
+      "seek": 0,
+      "start": 0,
+      "end": 8.7,
+      "text": " We're no strangers to love, you know the rules and so do I",
+      "temperature": 0,
+      "avg_logprob": -0.1710927,
+      "compression_ratio": 1.4109589,
+      "no_speech_prob": 0
+    },
+    {
+      "id": 1,
+      "seek": 0,
+      "start": 8.7,
+      "end": 16.699999,
+      "text": " I feel commitments what I'm thinking of, you wouldn't get this from any other guy",
+      "temperature": 0,
+      "avg_logprob": -0.1710927,
+      "compression_ratio": 1.4109589,
+      "no_speech_prob": 0
+    },
+    {
+      "id": 2,
+      "seek": 0,
+      "start": 16.699999,
+      "end": 24.699999,
+      "text": " I just wanna tell you how I'm feeling, gotta make you understand",
+      "temperature": 0,
+      "avg_logprob": -0.1710927,
+      "compression_ratio": 1.4109589,
+      "no_speech_prob": 0
+    }
+  ],
+  "x_groq": {
+    "id": "req_01m3y8qbr5ew3sc1bkpke3qn1x"
+  }
+}

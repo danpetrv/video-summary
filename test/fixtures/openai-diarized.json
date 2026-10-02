@@ -1,0 +1,11 @@
+{
+  "task": "transcribe",
+  "duration": 14.3,
+  "text": "Hello. Hi, thanks for having me. Let's get started.",
+  "segments": [
+    { "type": "transcript.text.segment", "id": "seg_0", "start": 0.05, "end": 5.25, "text": " Hello.", "speaker": "A" },
+    { "type": "transcript.text.segment", "id": "seg_1", "start": 5.5, "end": 9.75, "text": " Hi, thanks for having me.", "speaker": "B" },
+    { "type": "transcript.text.segment", "id": "seg_2", "start": 10.0, "end": 14.3, "text": " Let's get started.", "speaker": "A" }
+  ],
+  "usage": { "type": "duration", "seconds": 15 }
+}
