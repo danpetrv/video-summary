@@ -2,6 +2,7 @@ import { type IncomingMessage, request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { Readable } from "node:stream";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
+import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
 import type { Fetcher } from "./types";
 
 /** Collapse whitespace runs (newlines included) so error text stays on one stderr line. */
@@ -39,6 +40,9 @@ const MAX_REDIRECTS = 5;
  * rejects with the signal's reason (TimeoutError, AbortError).
  * Unknown init keys (Bun's `timeout`) are ignored.
  */
+/** Credentials native fetch never forwards to another origin. */
+const CROSS_ORIGIN_DROP = ["authorization", "proxy-authorization", "cookie"];
+
 export const httpFetch: Fetcher = (input, init = {}) => send(new URL(input), init, MAX_REDIRECTS);
 
 async function send(url: URL, init: RequestInit, redirects: number): Promise<Response> {
@@ -81,7 +85,7 @@ async function send(url: URL, init: RequestInit, redirects: number): Promise<Res
     if (next.origin === url.origin) return send(next, init, redirects - 1);
     // Like fetch: never forward credentials to another origin (also on any later hop).
     const stripped = new Headers(init.headers);
-    stripped.delete("authorization");
+    for (const h of CROSS_ORIGIN_DROP) stripped.delete(h);
     return send(next, { ...init, headers: stripped }, redirects - 1);
   }
   const out = new Headers();
@@ -94,5 +98,18 @@ async function send(url: URL, init: RequestInit, redirects: number): Promise<Res
   const onAbort = () => res.destroy(signal!.reason);
   signal?.addEventListener("abort", onAbort, { once: true });
   res.on("close", () => signal?.removeEventListener("abort", onAbort));
-  return new Response(Readable.toWeb(res) as unknown as ReadableStream, { status, statusText: res.statusMessage, headers: out });
+  // Decode compressed bodies like fetch does, and drop the headers that described the encoded form.
+  const encoding = String(res.headers["content-encoding"] ?? "").trim().toLowerCase();
+  const decoder = encoding === "gzip" || encoding === "x-gzip" ? createGunzip()
+    : encoding === "deflate" ? createInflate()
+    : encoding === "br" ? createBrotliDecompress()
+    : null;
+  let stream: Readable = res;
+  if (decoder) {
+    res.on("error", (e) => decoder.destroy(e));
+    stream = res.pipe(decoder);
+    out.delete("content-encoding");
+    out.delete("content-length");
+  }
+  return new Response(Readable.toWeb(stream) as unknown as ReadableStream, { status, statusText: res.statusMessage, headers: out });
 }

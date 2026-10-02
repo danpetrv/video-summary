@@ -13,7 +13,10 @@ beforeAll(() => {
   // A second origin (other port): echoes whether Authorization arrived.
   other = Bun.serve({
     port: 0, hostname: "127.0.0.1",
-    fetch: (req) => Response.json({ origin: "other", auth: req.headers.get("authorization") }),
+    fetch: (req) => Response.json({
+      origin: "other", auth: req.headers.get("authorization"),
+      proxyAuth: req.headers.get("proxy-authorization"), cookie: req.headers.get("cookie"),
+    }),
   });
   otherBase = `http://127.0.0.1:${other.port}`;
   server = Bun.serve({
@@ -34,6 +37,10 @@ beforeAll(() => {
             fileHead: Buffer.from(await file.arrayBuffer()).subarray(0, 4).toString(),
           });
         }
+        case "/gzip":
+          return new Response(Bun.gzipSync(JSON.stringify({ zipped: true })), {
+            headers: { "content-type": "application/json", "content-encoding": "gzip" },
+          });
         case "/empty":
           return new Response(null, { status: 204 });
         case "/missing":
@@ -101,7 +108,7 @@ test("httpFetch: redirect keeps Authorization on the same origin, drops it acros
   const same = await httpFetch(`${base}/moved`, { headers: { Authorization: "Bearer t" } });
   expect(await same.json()).toEqual({ a: 1, auth: "Bearer t" });
   const cross = await httpFetch(`${base}/cross`, { headers: new Headers({ authorization: "Bearer t" }) });
-  expect(await cross.json()).toEqual({ origin: "other", auth: null });
+  expect(await cross.json()).toEqual({ origin: "other", auth: null, proxyAuth: null, cookie: null });
 });
 
 test("httpFetch: POST string body with Headers object", async () => {
@@ -182,5 +189,17 @@ try {
   expect(form).toStartWith("ok 200 ");
   expect(JSON.parse(form.slice(7))).toMatchObject({ keys: ["note", "audio_file"], fileSize: 100_000, fileHead: "OggS" });
   expect(same).toBe('ok 200 {"a":1,"auth":"Bearer t"}');
-  expect(cross).toBe('ok 200 {"origin":"other","auth":null}');
+  expect(cross).toBe('ok 200 {"origin":"other","auth":null,"proxyAuth":null,"cookie":null}');
 }, 20_000);
+
+test("#6: cross-origin redirect also drops Proxy-Authorization and Cookie", async () => {
+  const headers = { Authorization: "Bearer t", "Proxy-Authorization": "Basic p", Cookie: "s=1" };
+  const r = await (await httpFetch(`${base}/cross`, { headers })).json();
+  expect(r).toEqual({ origin: "other", auth: null, proxyAuth: null, cookie: null });
+});
+
+test("#6: a gzip-encoded response body is decoded", async () => {
+  const r = await httpFetch(`${base}/gzip`);
+  expect(r.headers.get("content-encoding")).toBeNull();
+  expect(await r.json()).toEqual({ zipped: true });
+});
