@@ -46,3 +46,18 @@ test("finalizeSummary: no summary.md -> UserError; present -> file rewritten, mi
   expect(await finalizeSummary(dir)).toEqual({ reading_minutes: 3 });
   expect(readFileSync(join(dir, "summary.md"), "utf8")).toContain("> 📖 ~3 min");
 });
+
+test("#5: repeated finalize on an unchanged summary keeps the same number", () => {
+  // header tokens (#, T, >, 📺, a, ·, b, >, 📝, c) = 10 + 390 words = exactly 400 by the old count;
+  // the inserted "> 📖 ~2 min read" would push the old count to 405 → 3 on the second pass
+  const md = "# T\n\n> 📺 a · b\n> 📝 c\n\n" + "w ".repeat(390).trim() + "\n";
+  const once = applyReadingTime(md);
+  const twice = applyReadingTime(once);
+  expect(twice).toBe(once);
+  expect(readingMinutes(once)).toBe(readingMinutes(md));
+});
+
+test("#5: markdown markers and the reading-time line are not words", () => {
+  const body = "w ".repeat(190).trim(); // 190 words + markers would be 201 → 2 min by the old count
+  expect(readingMinutes(`# Title\n\n> 📖 ~3 min read\n> 📺 x\n\n- ${body}\n`)).toBe(readingMinutes(`Title\n\nx\n\n${body}\n`));
+});

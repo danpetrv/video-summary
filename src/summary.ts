@@ -21,8 +21,10 @@ function stripFences(md: string): string {
   return out.join("\n");
 }
 
+/** Words only: the reading-time line itself and bare markdown markers (#, >, -, emoji) do not count. */
 export function readingMinutes(markdown: string): number {
-  const words = stripFences(markdown).match(/\S+/g)?.length ?? 0;
+  const text = stripFences(markdown).split("\n").filter((l) => !/^\s*> 📖/.test(l)).join("\n");
+  const words = text.match(/\S+/g)?.filter((w) => /[\p{L}\p{N}]/u.test(w)).length ?? 0;
   return Math.max(1, Math.ceil(words / WPM));
 }
 
