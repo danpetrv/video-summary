@@ -117,12 +117,25 @@ export async function fetchCmd(input: string, flags: FetchFlags, d: FetchDeps): 
         const cues = await readSubs(await downloadSubs(vm.webpage_url, manual, work, d.run));
         return { cues, source: vm.extractor_key === "Youtube" ? "youtube-manual-subs" : "manual-subs", asr: null };
       }
-      if (auto) {
+      const viaAsr = async (): Promise<Got> => {
+        const asr = await recognize(() => downloadAudio(vm.webpage_url, work, d.run), work, item, flags, d);
+        return { cues: asr.cues, source: "asr", asr };
+      };
+      if (!auto) return viaAsr();
+      let autoError: UserError;
+      try {
         const cues = await readSubs(await downloadSubs(vm.webpage_url, auto, work, d.run, true));
         return { cues: dedupeRolling(cues), source: "youtube-auto-subs", asr: null };
+      } catch (e) {
+        if (!(e instanceof UserError)) throw e;
+        autoError = e; // e.g. YouTube 429 on timedtext: try speech recognition instead
       }
-      const asr = await recognize(() => downloadAudio(vm.webpage_url, work, d.run), work, item, flags, d);
-      return { cues: asr.cues, source: "asr", asr };
+      try {
+        return await viaAsr();
+      } catch (e) {
+        if (!(e instanceof UserError)) throw e;
+        throw new UserError(`auto captions could not be downloaded (${autoError.message}); ${e.message}`);
+      }
     };
   } else {
     const abs = resolveInputPath(input, d.cwd, d.home);

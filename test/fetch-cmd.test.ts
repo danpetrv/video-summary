@@ -23,7 +23,7 @@ const GROQ_URL = "https://api.groq.com";
 
 type Env = {
   meta?: object; health?: number; asrStatus?: number; oggDuration?: string; oggSize?: number;
-  subsExt?: "vtt" | "srt"; cfg?: Partial<Config>; providers?: ProviderConfig[]; groqKey?: boolean;
+  subsExt?: "vtt" | "srt"; cfg?: Partial<Config>; providers?: ProviderConfig[]; groqKey?: boolean; autoFail?: boolean;
 };
 let calls: { cmds: string[][]; urls: string[] };
 let base: string;
@@ -38,6 +38,8 @@ function deps(env: Env = {}): FetchDeps {
     calls.cmds.push(cmd);
     if (cmd[0] === "yt-dlp" && cmd.includes("--dump-single-json"))
       return { code: 0, stdout: JSON.stringify(env.meta ?? ytMeta), stderr: "" };
+    if (cmd[0] === "yt-dlp" && cmd.includes("--write-auto-subs") && env.autoFail)
+      return { code: 1, stdout: "", stderr: "ERROR: Unable to download video subtitles: HTTP Error 429: Too Many Requests\n" };
     if (cmd[0] === "yt-dlp" && (cmd.includes("--write-subs") || cmd.includes("--write-auto-subs"))) {
       const lang = cmd[cmd.indexOf("--sub-langs") + 1];
       const ext = env.subsExt ?? "vtt";
@@ -310,4 +312,19 @@ test("unknown duration: probed 6805 s needs 28k -> recompressed from source at 2
   expect(ffs.map((c) => c[c.indexOf("-b:a") + 1])).toEqual(["32k", "28k"]);
   expect(r.asr_provider).toBe("groq");
   expect(existsSync(join(r.dir, ".work"))).toBe(false);
+});
+
+test("#3: auto-caption download fails → falls back to speech recognition", async () => {
+  const r = await fetchCmd(URL1, flags, deps({ meta: noMeta, cfg: { subtitles: "manual+auto" }, autoFail: true }));
+  expect([r.source, r.asr_provider]).toEqual(["asr", "wx"]);
+  expect(hasFormatDownload()).toBe(true);
+});
+
+test("#3: auto captions fail and no ASR provider → one error naming both reasons", async () => {
+  const err = await fetchCmd(URL1, flags, deps({ meta: noMeta, cfg: { subtitles: "manual+auto" }, providers: [], autoFail: true }))
+    .catch((e) => e);
+  expect(err).toBeInstanceOf(UserError);
+  expect(err.message).toContain("auto captions could not be downloaded");
+  expect(err.message).toContain("HTTP Error 429");
+  expect(err.message).toContain("no ASR providers configured");
 });
