@@ -1151,7 +1151,9 @@ async function recognize(getAudio, work, item, flags, d) {
       throw new UserError(c.error);
     return c.provider;
   };
-  let provider = item.duration !== null ? pick(item.duration) : null;
+  let durationSec = item.duration;
+  let rate = kbps;
+  let provider = durationSec !== null ? pick(durationSec) : null;
   if (!provider)
     pick(0);
   const ogg = join5(work, "audio.ogg");
@@ -1167,21 +1169,43 @@ async function recognize(getAudio, work, item, flags, d) {
     if (!provider) {
       const real = await probeDuration(ogg, d.run);
       const better = bitrateFor(real, d.cfg.bitrate, targetBytes(providers));
-      const rate = Math.min(better, kbps);
+      rate = Math.min(better, kbps);
       if (better < kbps)
         await compressAudio(src, ogg, d.run, better);
+      durationSec = real;
       provider = pick(real, rate);
     }
     for (const f of await readdir3(work))
       if (f.startsWith("src."))
         await rm2(join5(work, f), { force: true });
   }
+  if (durationSec === null)
+    durationSec = await probeDuration(ogg, d.run);
   if (!provider)
-    provider = pick(await probeDuration(ogg, d.run));
-  if (provider.maxBytes !== null && statSync(ogg).size > provider.maxBytes) {
-    throw new UserError(`${provider.name}: compressed audio is ${statSync(ogg).size} bytes, over the file limit ${provider.maxBytes}`);
+    provider = pick(durationSec);
+  const failed = [];
+  const tried = new Set;
+  const size = statSync(ogg).size;
+  for (;; ) {
+    tried.add(provider.name);
+    if (provider.maxBytes !== null && size > provider.maxBytes) {
+      failed.push(`${provider.name}: compressed audio is ${size} bytes, over the file limit ${provider.maxBytes}`);
+    } else {
+      try {
+        const opts = { language: primaryLang(item.language), diarize: flags.diarize };
+        return { asr: await transcribeWith(provider, ogg, opts, d.fetch, d.env, d.home), failed };
+      } catch (e) {
+        failed.push(e.message);
+      }
+    }
+    const rest = candidates.filter((c) => !tried.has(c.provider.name));
+    const next = chooseProvider({ candidates: rest, durationSec, kbps: rate, privateSource: item.privateSource, allowCloud: flags.allowCloud });
+    if ("error" in next) {
+      const why = rest.length ? `; no other provider fits: ${next.error.replace(/^no ASR provider fits: /, "")}` : "";
+      throw new UserError(`speech recognition failed: ${failed.join("; ")}${why}`);
+    }
+    provider = next.provider;
   }
-  return transcribeWith(provider, ogg, { language: primaryLang(item.language), diarize: flags.diarize }, d.fetch, d.env, d.home);
 }
 var looksLikeLink = (s) => /^[a-z0-9-]+(\.[a-z0-9-]+)+\/\S*/i.test(s);
 async function fetchCmd(input, flags, d) {
@@ -1211,8 +1235,8 @@ async function fetchCmd(input, flags, d) {
         return { cues, source: vm.extractor_key === "Youtube" ? "youtube-manual-subs" : "manual-subs", asr: null };
       }
       const viaAsr = async () => {
-        const asr = await recognize(() => downloadAudio(vm.webpage_url, work, d.run), work, item, flags, d);
-        return { cues: asr.cues, source: "asr", asr };
+        const { asr, failed } = await recognize(() => downloadAudio(vm.webpage_url, work, d.run), work, item, flags, d);
+        return { cues: asr.cues, source: "asr", asr, asrFailed: failed };
       };
       if (!auto)
         return viaAsr();
@@ -1256,8 +1280,8 @@ async function fetchCmd(input, flags, d) {
       const side = await findSidecarSubs(abs, lang);
       if (side)
         return { cues: await readSubs(side), source: "sidecar-subs", asr: null };
-      const asr = await recognize(async () => abs, work, item, flags, d);
-      return { cues: asr.cues, source: "asr", asr };
+      const { asr, failed } = await recognize(async () => abs, work, item, flags, d);
+      return { cues: asr.cues, source: "asr", asr, asrFailed: failed };
     };
   }
   const dir = await resolveItemDir(expandHome(d.cfg.outputDir, d.home), item.sourceKey, item.title, d.now);
@@ -1296,7 +1320,8 @@ async function fetchCmd(input, flags, d) {
     thumbnail: item.thumbnail
   };
   await writeMeta(dir, meta);
-  return toResult(meta, dir, transcriptPath, summaryPath);
+  const result = toResult(meta, dir, transcriptPath, summaryPath);
+  return got.asrFailed?.length ? { ...result, asr_failed: got.asrFailed } : result;
 }
 function toResult(meta, dir, transcriptPath, summaryPath) {
   return {

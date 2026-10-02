@@ -67,7 +67,9 @@ Bash timeout: recognition is already running on the server.
 
 Result: `dir`, `transcript_path`, `summary_path`, `summary_exists`, `source`
 (`youtube-manual-subs`, `manual-subs`, `youtube-auto-subs`, `sidecar-subs`, `asr`),
-`asr_provider`, `diarized`, `speakers`, `language`, `duration`, `transcript_tokens`, `url`.
+`asr_provider`, `diarized`, `speakers`, `language`, `duration`, `transcript_tokens`, `url`,
+and `asr_failed` when a provider failed and the next one recognized the audio: tell the user
+which provider failed and why.
 
 If the error says no provider fits (too long, no key, down), relay each reason and
 offer options: another provider, a lower bitrate (`config limits` shows the maximum

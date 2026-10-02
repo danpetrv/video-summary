@@ -31,9 +31,10 @@ export type FetchResult = {
   duration: number | null;
   transcript_tokens: number;
   url: string | null;
+  asr_failed?: string[]; // providers that failed before the one that recognized the audio
 };
 
-type Got = { cues: Cue[]; source: Source; asr: AsrResult | null };
+type Got = { cues: Cue[]; source: Source; asr: AsrResult | null; asrFailed?: string[] };
 type Item = {
   sourceKey: string; title: string; url: string | null; path: string | null; id: string | null;
   uploader: string | null; upload_date: string | null; duration: number | null; language: string | null;
@@ -53,10 +54,14 @@ async function readSubs(file: string): Promise<Cue[]> {
   return file.endsWith(".srt") ? parseSrt(text) : parseVtt(text);
 }
 
-/** Choose a provider (before any download), compress audio (or reuse a leftover .ogg), transcribe. */
+/**
+ * Choose a provider (before any download), compress audio (or reuse a leftover .ogg), transcribe.
+ * A provider that fails mid-recognition (HTTP error, rate limit, network, timeout) hands over to the next
+ * one that fits by the same rules, privacy included; `failed` lists those that gave up.
+ */
 async function recognize(
   getAudio: () => Promise<string>, work: string, item: Item, flags: FetchFlags, d: FetchDeps,
-): Promise<AsrResult> {
+): Promise<{ asr: AsrResult; failed: string[] }> {
   const providers = d.cfg.providers.map(resolveProvider);
   const candidates: Candidate[] = await probeProviders(providers, d.fetch, d.env, d.home);
   const kbps = bitrateFor(item.duration, d.cfg.bitrate, targetBytes(providers));
@@ -65,7 +70,9 @@ async function recognize(
     if ("error" in c) throw new UserError(c.error);
     return c.provider;
   };
-  let provider = item.duration !== null ? pick(item.duration) : null;
+  let durationSec = item.duration;
+  let rate = kbps;
+  let provider = durationSec !== null ? pick(durationSec) : null;
   // Unknown duration: fail fast on what is knowable now (availability, keys, privacy).
   if (!provider) pick(0);
 
@@ -83,17 +90,39 @@ async function recognize(
       // Duration unknown up front: with the real one, recompress at the adaptive bitrate if lower.
       const real = await probeDuration(ogg, d.run);
       const better = bitrateFor(real, d.cfg.bitrate, targetBytes(providers));
-      const rate = Math.min(better, kbps);
+      rate = Math.min(better, kbps);
       if (better < kbps) await compressAudio(src, ogg, d.run, better);
+      durationSec = real;
       provider = pick(real, rate);
     }
     for (const f of await readdir(work)) if (f.startsWith("src.")) await rm(join(work, f), { force: true });
   }
-  if (!provider) provider = pick(await probeDuration(ogg, d.run)); // leftover ogg, duration unknown
-  if (provider.maxBytes !== null && statSync(ogg).size > provider.maxBytes) {
-    throw new UserError(`${provider.name}: compressed audio is ${statSync(ogg).size} bytes, over the file limit ${provider.maxBytes}`);
+  if (durationSec === null) durationSec = await probeDuration(ogg, d.run); // leftover ogg, duration unknown
+  if (!provider) provider = pick(durationSec);
+
+  const failed: string[] = [];
+  const tried = new Set<string>();
+  const size = statSync(ogg).size;
+  for (;;) {
+    tried.add(provider.name);
+    if (provider.maxBytes !== null && size > provider.maxBytes) {
+      failed.push(`${provider.name}: compressed audio is ${size} bytes, over the file limit ${provider.maxBytes}`);
+    } else {
+      try {
+        const opts = { language: primaryLang(item.language), diarize: flags.diarize };
+        return { asr: await transcribeWith(provider, ogg, opts, d.fetch, d.env, d.home), failed };
+      } catch (e) {
+        failed.push((e as Error).message);
+      }
+    }
+    const rest = candidates.filter((c) => !tried.has(c.provider.name));
+    const next = chooseProvider({ candidates: rest, durationSec, kbps: rate, privateSource: item.privateSource, allowCloud: flags.allowCloud });
+    if ("error" in next) {
+      const why = rest.length ? `; no other provider fits: ${next.error.replace(/^no ASR provider fits: /, "")}` : "";
+      throw new UserError(`speech recognition failed: ${failed.join("; ")}${why}`);
+    }
+    provider = next.provider;
   }
-  return transcribeWith(provider, ogg, { language: primaryLang(item.language), diarize: flags.diarize }, d.fetch, d.env, d.home);
 }
 
 const looksLikeLink = (s: string): boolean => /^[a-z0-9-]+(\.[a-z0-9-]+)+\/\S*/i.test(s);
@@ -118,8 +147,8 @@ export async function fetchCmd(input: string, flags: FetchFlags, d: FetchDeps): 
         return { cues, source: vm.extractor_key === "Youtube" ? "youtube-manual-subs" : "manual-subs", asr: null };
       }
       const viaAsr = async (): Promise<Got> => {
-        const asr = await recognize(() => downloadAudio(vm.webpage_url, work, d.run), work, item, flags, d);
-        return { cues: asr.cues, source: "asr", asr };
+        const { asr, failed } = await recognize(() => downloadAudio(vm.webpage_url, work, d.run), work, item, flags, d);
+        return { cues: asr.cues, source: "asr", asr, asrFailed: failed };
       };
       if (!auto) return viaAsr();
       let autoError: UserError;
@@ -151,8 +180,8 @@ export async function fetchCmd(input: string, flags: FetchFlags, d: FetchDeps): 
       const lang = d.cfg.summaryLanguage === "auto" ? null : d.cfg.summaryLanguage;
       const side = await findSidecarSubs(abs, lang);
       if (side) return { cues: await readSubs(side), source: "sidecar-subs", asr: null };
-      const asr = await recognize(async () => abs, work, item, flags, d);
-      return { cues: asr.cues, source: "asr", asr };
+      const { asr, failed } = await recognize(async () => abs, work, item, flags, d);
+      return { cues: asr.cues, source: "asr", asr, asrFailed: failed };
     };
   }
 
@@ -193,7 +222,8 @@ export async function fetchCmd(input: string, flags: FetchFlags, d: FetchDeps): 
     thumbnail: item.thumbnail,
   };
   await writeMeta(dir, meta);
-  return toResult(meta, dir, transcriptPath, summaryPath);
+  const result = toResult(meta, dir, transcriptPath, summaryPath);
+  return got.asrFailed?.length ? { ...result, asr_failed: got.asrFailed } : result;
 }
 
 function toResult(meta: Meta, dir: string, transcriptPath: string, summaryPath: string): FetchResult {

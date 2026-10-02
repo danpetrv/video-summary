@@ -2,7 +2,9 @@
 
 Providers are tried in config order; the first that is available, has a key, fits the
 video length and file size, and is allowed by the privacy rule is used. If a provider
-fails in the middle of recognition, the next one is **not** tried automatically.
+fails in the middle of recognition (HTTP error, rate limit, network error, timeout), the
+next one that fits by the same rules is tried; a cloud provider still needs
+`--allow-cloud` for a local file. `fetch` lists the failed ones in `asr_failed`.
 
 ## Presets (`type: openai-compatible`)
 

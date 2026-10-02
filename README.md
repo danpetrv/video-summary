@@ -35,7 +35,8 @@ The agent checks all of this (`check`) and offers to install what is missing.
 
 ## Providers and limits
 
-Providers are tried in the order of the config; the first suitable one is used.
+Providers are tried in the order of the config; the first suitable one is used. If it
+fails during recognition (server error, rate limit, network), the next suitable one is tried.
 
 | provider | notes |
 |---|---|
