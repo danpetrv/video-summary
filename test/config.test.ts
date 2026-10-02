@@ -136,3 +136,19 @@ test("parseConfig: url/model requirements with field paths", () => {
   expect(() => parseConfig({ readeck: { url: "/" } })).toThrow("config: readeck.url: required");
   expect(parseConfig({ providers: [{ name: "a", type: "openai-compatible", preset: "openai" }] }).providers[0]!.model).toBeUndefined();
 });
+
+test("#2: settings that would be ignored are rejected with a field path", () => {
+  const p = (x: object) => parseConfig({ providers: [{ name: "x", ...x }] });
+  expect(() => p({ type: "openai-compatible", preset: "groq", diarize: true }))
+    .toThrow("config: providers[0].diarize: speaker labels are only supported by whisperx and the openai preset");
+  expect(() => p({ type: "openai-compatible", url: "http://l/v1", model: "m", diarize: true }))
+    .toThrow("config: providers[0].diarize: speaker labels are only supported by whisperx and the openai preset");
+  expect(() => p({ type: "openai-compatible", preset: "openai", tier: "dev" }))
+    .toThrow('config: providers[0].tier: only allowed with preset "groq"');
+  expect(() => p({ type: "whisperx", url: "http://w", tier: "free" }))
+    .toThrow('config: providers[0].tier: only allowed with preset "groq"');
+  // still valid
+  expect(() => p({ type: "whisperx", url: "http://w", diarize: true })).not.toThrow();
+  expect(() => p({ type: "openai-compatible", preset: "openai", diarize: true })).not.toThrow();
+  expect(() => p({ type: "openai-compatible", preset: "groq", tier: "dev", diarize: false })).not.toThrow();
+});

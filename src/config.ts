@@ -103,6 +103,7 @@ function parseProvider(raw: unknown, i: number, seen: Set<string>): ProviderConf
   }
   if (raw.tier !== undefined) {
     if (raw.tier !== "free" && raw.tier !== "dev") fail(`${path}.tier`, 'must be "free" or "dev"');
+    if (p.preset !== "groq") fail(`${path}.tier`, 'only allowed with preset "groq"');
     p.tier = raw.tier as "free" | "dev";
   }
   const url = optStr(raw, "url", path);
@@ -114,6 +115,9 @@ function parseProvider(raw: unknown, i: number, seen: Set<string>): ProviderConf
   if (model) p.model = model;
   else if (p.type === "openai-compatible" && !p.preset) fail(`${path}.model`, "required without preset");
   const diarize = optBool(raw, "diarize", path);
+  if (diarize === true && p.type !== "whisperx" && p.preset !== "openai") {
+    fail(`${path}.diarize`, "speaker labels are only supported by whisperx and the openai preset");
+  }
   if (diarize !== undefined) p.diarize = diarize;
   const local = optBool(raw, "local", path);
   if (local !== undefined) p.local = local;
