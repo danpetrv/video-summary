@@ -105,6 +105,8 @@ function parseProvider(raw, i, seen) {
   if (raw.tier !== undefined) {
     if (raw.tier !== "free" && raw.tier !== "dev")
       fail(`${path}.tier`, 'must be "free" or "dev"');
+    if (p.preset !== "groq")
+      fail(`${path}.tier`, 'only allowed with preset "groq"');
     p.tier = raw.tier;
   }
   const url = optStr(raw, "url", path);
@@ -120,6 +122,9 @@ function parseProvider(raw, i, seen) {
   else if (p.type === "openai-compatible" && !p.preset)
     fail(`${path}.model`, "required without preset");
   const diarize = optBool(raw, "diarize", path);
+  if (diarize === true && p.type !== "whisperx" && p.preset !== "openai") {
+    fail(`${path}.diarize`, "speaker labels are only supported by whisperx and the openai preset");
+  }
   if (diarize !== undefined)
     p.diarize = diarize;
   const local = optBool(raw, "local", path);
@@ -437,10 +442,123 @@ function limitsReport(ps) {
 // src/asr/openai-compatible.ts
 import { openAsBlob } from "node:fs";
 
+// src/asr/language.ts
+var WHISPER_NAMES = {
+  english: "en",
+  chinese: "zh",
+  german: "de",
+  spanish: "es",
+  russian: "ru",
+  korean: "ko",
+  french: "fr",
+  japanese: "ja",
+  portuguese: "pt",
+  turkish: "tr",
+  polish: "pl",
+  catalan: "ca",
+  dutch: "nl",
+  arabic: "ar",
+  swedish: "sv",
+  italian: "it",
+  indonesian: "id",
+  hindi: "hi",
+  finnish: "fi",
+  vietnamese: "vi",
+  hebrew: "he",
+  ukrainian: "uk",
+  greek: "el",
+  malay: "ms",
+  czech: "cs",
+  romanian: "ro",
+  danish: "da",
+  hungarian: "hu",
+  tamil: "ta",
+  norwegian: "no",
+  thai: "th",
+  urdu: "ur",
+  croatian: "hr",
+  bulgarian: "bg",
+  lithuanian: "lt",
+  latin: "la",
+  maori: "mi",
+  malayalam: "ml",
+  welsh: "cy",
+  slovak: "sk",
+  telugu: "te",
+  persian: "fa",
+  latvian: "lv",
+  bengali: "bn",
+  serbian: "sr",
+  azerbaijani: "az",
+  slovenian: "sl",
+  kannada: "kn",
+  estonian: "et",
+  macedonian: "mk",
+  breton: "br",
+  basque: "eu",
+  icelandic: "is",
+  armenian: "hy",
+  nepali: "ne",
+  mongolian: "mn",
+  bosnian: "bs",
+  kazakh: "kk",
+  albanian: "sq",
+  swahili: "sw",
+  galician: "gl",
+  marathi: "mr",
+  punjabi: "pa",
+  sinhala: "si",
+  khmer: "km",
+  shona: "sn",
+  yoruba: "yo",
+  somali: "so",
+  afrikaans: "af",
+  occitan: "oc",
+  georgian: "ka",
+  belarusian: "be",
+  tajik: "tg",
+  sindhi: "sd",
+  gujarati: "gu",
+  amharic: "am",
+  yiddish: "yi",
+  lao: "lo",
+  uzbek: "uz",
+  faroese: "fo",
+  "haitian creole": "ht",
+  pashto: "ps",
+  turkmen: "tk",
+  nynorsk: "nn",
+  maltese: "mt",
+  sanskrit: "sa",
+  luxembourgish: "lb",
+  myanmar: "my",
+  tibetan: "bo",
+  tagalog: "tl",
+  malagasy: "mg",
+  assamese: "as",
+  tatar: "tt",
+  hawaiian: "haw",
+  lingala: "ln",
+  hausa: "ha",
+  bashkir: "ba",
+  javanese: "jw",
+  sundanese: "su",
+  cantonese: "yue"
+};
+function normalizeLanguage(raw) {
+  const v = raw?.trim().toLowerCase();
+  if (!v)
+    return null;
+  if (/^[a-z]{2,3}(-[a-z0-9]{2,8})*$/.test(v) && !(v in WHISPER_NAMES))
+    return v.split("-")[0];
+  return WHISPER_NAMES[v] ?? null;
+}
+
 // src/net.ts
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { Readable } from "node:stream";
+import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
 var oneLine = (s) => s.replace(/\s+/g, " ").trim();
 var GENERIC = new Set(["Error", "TypeError"]);
 function netErrorTag(e) {
@@ -459,6 +577,7 @@ var runtimeFetch = (versions) => versions.bun ? globalThis.fetch : httpFetch;
 var NULL_BODY = new Set([204, 205, 304]);
 var REDIRECT = new Set([301, 302, 303, 307, 308]);
 var MAX_REDIRECTS = 5;
+var CROSS_ORIGIN_DROP = ["authorization", "proxy-authorization", "cookie"];
 var httpFetch = (input, init = {}) => send(new URL(input), init, MAX_REDIRECTS);
 async function send(url, init, redirects) {
   const method = (init.method ?? "GET").toUpperCase();
@@ -496,7 +615,8 @@ async function send(url, init, redirects) {
     if (next.origin === url.origin)
       return send(next, init, redirects - 1);
     const stripped = new Headers(init.headers);
-    stripped.delete("authorization");
+    for (const h of CROSS_ORIGIN_DROP)
+      stripped.delete(h);
     return send(next, { ...init, headers: stripped }, redirects - 1);
   }
   const out = new Headers;
@@ -509,7 +629,16 @@ async function send(url, init, redirects) {
   const onAbort = () => res.destroy(signal.reason);
   signal?.addEventListener("abort", onAbort, { once: true });
   res.on("close", () => signal?.removeEventListener("abort", onAbort));
-  return new Response(Readable.toWeb(res), { status, statusText: res.statusMessage, headers: out });
+  const encoding = String(res.headers["content-encoding"] ?? "").trim().toLowerCase();
+  const decoder = encoding === "gzip" || encoding === "x-gzip" ? createGunzip() : encoding === "deflate" ? createInflate() : encoding === "br" ? createBrotliDecompress() : null;
+  let stream = res;
+  if (decoder) {
+    res.on("error", (e) => decoder.destroy(e));
+    stream = res.pipe(decoder);
+    out.delete("content-encoding");
+    out.delete("content-length");
+  }
+  return new Response(Readable.toWeb(stream), { status, statusText: res.statusMessage, headers: out });
 }
 
 // src/asr/types.ts
@@ -539,7 +668,7 @@ async function modelsReachable(url, f, key) {
 function parseVerbose(json, provider) {
   const body = json;
   const cues = (body.segments ?? []).map((s) => ({ start: s.start, end: s.end, text: s.text.trim() }));
-  return { cues, provider, diarized: false, speakers: 0, language: body.language?.toLowerCase() ?? null };
+  return { cues, provider, diarized: false, speakers: 0, language: normalizeLanguage(body.language) };
 }
 function parseDiarized(json, provider) {
   const body = json;
@@ -552,7 +681,7 @@ function parseDiarized(json, provider) {
       names.set(s.speaker, `Speaker ${names.size + 1}`);
     return { ...cue, speaker: names.get(s.speaker) };
   });
-  return { cues, provider, diarized: names.size > 0, speakers: names.size, language: body.language?.toLowerCase() ?? null };
+  return { cues, provider, diarized: names.size > 0, speakers: names.size, language: normalizeLanguage(body.language) };
 }
 async function transcribeOpenAI(file, o, p, key, f) {
   const diarized = p.format === "diarized_json";
@@ -603,7 +732,7 @@ function parseWhisperx(json, provider) {
       names.set(s.speaker, `Speaker ${names.size + 1}`);
     return { ...cue, speaker: names.get(s.speaker) };
   });
-  return { cues, provider, diarized: names.size > 0, speakers: names.size, language: body.language ?? null };
+  return { cues, provider, diarized: names.size > 0, speakers: names.size, language: normalizeLanguage(body.language) };
 }
 async function transcribeWhisperx(file, o, p, key, f) {
   const q = new URLSearchParams({ output: "json", diarize: String(o.diarize && p.diarize), word_timestamps: "false" });
@@ -1072,12 +1201,28 @@ async function fetchCmd(input, flags, d) {
         const cues = await readSubs(await downloadSubs(vm.webpage_url, manual, work, d.run));
         return { cues, source: vm.extractor_key === "Youtube" ? "youtube-manual-subs" : "manual-subs", asr: null };
       }
-      if (auto) {
+      const viaAsr = async () => {
+        const asr = await recognize(() => downloadAudio(vm.webpage_url, work, d.run), work, item, flags, d);
+        return { cues: asr.cues, source: "asr", asr };
+      };
+      if (!auto)
+        return viaAsr();
+      let autoError;
+      try {
         const cues = await readSubs(await downloadSubs(vm.webpage_url, auto, work, d.run, true));
         return { cues: dedupeRolling(cues), source: "youtube-auto-subs", asr: null };
+      } catch (e) {
+        if (!(e instanceof UserError))
+          throw e;
+        autoError = e;
       }
-      const asr = await recognize(() => downloadAudio(vm.webpage_url, work, d.run), work, item, flags, d);
-      return { cues: asr.cues, source: "asr", asr };
+      try {
+        return await viaAsr();
+      } catch (e) {
+        if (!(e instanceof UserError))
+          throw e;
+        throw new UserError(`auto captions could not be downloaded (${autoError.message}); ${e.message}`);
+      }
     };
   } else {
     const abs = resolveInputPath(input, d.cwd, d.home);
@@ -2722,7 +2867,10 @@ function stripFences(md) {
 `);
 }
 function readingMinutes(markdown) {
-  const words = stripFences(markdown).match(/\S+/g)?.length ?? 0;
+  const text = stripFences(markdown).split(`
+`).filter((l) => !/^\s*> 📖/.test(l)).join(`
+`);
+  const words = text.match(/\S+/g)?.filter((w) => /[\p{L}\p{N}]/u.test(w)).length ?? 0;
   return Math.max(1, Math.ceil(words / WPM));
 }
 function applyReadingTime(markdown) {
