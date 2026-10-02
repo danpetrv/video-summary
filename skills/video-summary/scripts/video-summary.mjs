@@ -16,12 +16,14 @@ class UserError extends Error {
 var DEFAULT_CONFIG = {
   outputDir: "~/Documents/video-summaries",
   summaryLanguage: "auto",
+  summaryLength: "medium",
   subtitles: "manual",
   bitrate: "adaptive",
   providers: [],
   readeck: null
 };
 var PRESETS = ["groq", "openai"];
+var SUMMARY_LENGTH = /^(short|medium|long|([1-9]|[1-5]\d|60)m)$/;
 var TOP_KEYS = Object.keys(DEFAULT_CONFIG);
 function configPath(env, home) {
   if (env.VIDEO_SUMMARY_CONFIG)
@@ -147,6 +149,12 @@ function parseConfig(raw) {
     cfg.outputDir = str(raw.outputDir, "outputDir");
   if (raw.summaryLanguage !== undefined)
     cfg.summaryLanguage = str(raw.summaryLanguage, "summaryLanguage");
+  if (raw.summaryLength !== undefined) {
+    if (typeof raw.summaryLength !== "string" || !SUMMARY_LENGTH.test(raw.summaryLength)) {
+      fail("summaryLength", "must be short, medium, long or <N>m (1-60)");
+    }
+    cfg.summaryLength = raw.summaryLength;
+  }
   if (raw.subtitles !== undefined) {
     if (raw.subtitles !== "manual" && raw.subtitles !== "manual+auto")
       fail("subtitles", 'must be "manual" or "manual+auto"');

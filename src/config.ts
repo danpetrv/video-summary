@@ -10,13 +10,14 @@ export type ProviderConfig = KeyRef & {
 };
 export type ReadeckConfig = KeyRef & { url: string; label?: string };
 export type Config = {
-  outputDir: string; summaryLanguage: string; subtitles: "manual" | "manual+auto";
+  outputDir: string; summaryLanguage: string; summaryLength: string; subtitles: "manual" | "manual+auto";
   bitrate: "adaptive" | "fixed"; providers: ProviderConfig[]; readeck: ReadeckConfig | null;
 };
 
 export const DEFAULT_CONFIG: Config = {
   outputDir: "~/Documents/video-summaries",
   summaryLanguage: "auto",
+  summaryLength: "medium",
   subtitles: "manual",
   bitrate: "adaptive",
   providers: [],
@@ -24,6 +25,8 @@ export const DEFAULT_CONFIG: Config = {
 };
 
 const PRESETS = ["groq", "openai"];
+/** short | medium | long, or a target reading time of 1-60 minutes ("5m"). */
+const SUMMARY_LENGTH = /^(short|medium|long|([1-9]|[1-5]\d|60)m)$/;
 const TOP_KEYS = Object.keys(DEFAULT_CONFIG);
 
 export function configPath(env: Record<string, string | undefined>, home: string): string {
@@ -134,6 +137,12 @@ export function parseConfig(raw: unknown): Config {
   const cfg: Config = { ...DEFAULT_CONFIG, providers: [], readeck: null };
   if (raw.outputDir !== undefined) cfg.outputDir = str(raw.outputDir, "outputDir");
   if (raw.summaryLanguage !== undefined) cfg.summaryLanguage = str(raw.summaryLanguage, "summaryLanguage");
+  if (raw.summaryLength !== undefined) {
+    if (typeof raw.summaryLength !== "string" || !SUMMARY_LENGTH.test(raw.summaryLength)) {
+      fail("summaryLength", "must be short, medium, long or <N>m (1-60)");
+    }
+    cfg.summaryLength = raw.summaryLength as string;
+  }
   if (raw.subtitles !== undefined) {
     if (raw.subtitles !== "manual" && raw.subtitles !== "manual+auto") fail("subtitles", 'must be "manual" or "manual+auto"');
     cfg.subtitles = raw.subtitles as Config["subtitles"];

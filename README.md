@@ -15,7 +15,13 @@ npx skills add danpetrv/video-summary
 ```
 
 Then ask your agent: `/video-summary https://youtu.be/...`. On the first run the agent
-walks you through the setup (output folder, providers, keys, language, Readeck).
+walks you through the setup (output folder, providers, keys, language, summary size,
+Readeck).
+
+The summary size is an optional argument: `short` (TL;DR and key ideas), `medium` (the
+full template, default), `long` (in depth) or a target reading time such as `5m`
+(1-60 minutes): `/video-summary https://youtu.be/... short`. Plain words work too
+("briefly", "in detail"). Without one, `summaryLength` from the config is used.
 
 ## Requirements
 
@@ -61,6 +67,7 @@ overrides the whole path:
 {
   "outputDir": "~/Documents/video-summaries",
   "summaryLanguage": "auto",
+  "summaryLength": "medium",
   "subtitles": "manual",
   "bitrate": "adaptive",
   "providers": [

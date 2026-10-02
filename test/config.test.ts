@@ -23,8 +23,17 @@ test("expandHome", () => {
 });
 
 test("DEFAULT_CONFIG", () => {
-  expect(DEFAULT_CONFIG).toEqual({ outputDir: "~/Documents/video-summaries", summaryLanguage: "auto", subtitles: "manual",
-    bitrate: "adaptive", providers: [], readeck: null });
+  expect(DEFAULT_CONFIG).toEqual({ outputDir: "~/Documents/video-summaries", summaryLanguage: "auto", summaryLength: "medium",
+    subtitles: "manual", bitrate: "adaptive", providers: [], readeck: null });
+});
+
+test("summaryLength: short, medium, long or <N>m with N in 1..60", () => {
+  for (const v of ["short", "medium", "long", "1m", "5m", "60m"]) expect(parseConfig({ summaryLength: v }).summaryLength).toBe(v);
+  for (const v of ["0m", "61m", "05m", "5", "5 m", "huge", "", 5]) {
+    expect(() => parseConfig({ summaryLength: v })).toThrow("config: summaryLength: must be short, medium, long or <N>m (1-60)");
+  }
+  expect(setValue(DEFAULT_CONFIG, "summaryLength", "short").summaryLength).toBe("short");
+  expect(() => setValue(DEFAULT_CONFIG, "summaryLength", "tiny")).toThrow("config: summaryLength:");
 });
 
 test("parseConfig: недостающие поля добиваются умолчаниями", () => {

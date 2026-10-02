@@ -73,7 +73,8 @@ If the error says no provider fits (too long, no key, down), relay each reason a
 offer options: another provider, a lower bitrate (`config limits` shows the maximum
 length), or auto captions for YouTube (`subtitles: manual+auto`, see `references/setup.md`).
 
-If `summary_exists: true`, ask whether to rewrite the summary; if "no", go to step 4.
+If `summary_exists: true`, ask whether to rewrite the summary (when the user gave a size,
+offer to rewrite it in that size); if "no", go to step 4.
 
 ## 3. Summary
 
@@ -85,7 +86,19 @@ Write `<dir>/summary.md` following `references/summary-template.md` (template an
 Language: `summaryLanguage` from `config get summaryLanguage`; `auto` means the
 language the user talks to you in. Headings are written in that language.
 
+Size: `short`, `medium`, `long` or `<N>m` (target reading time, 1-60 minutes), taken from,
+in this order:
+
+1. an argument of the request: `/video-summary '<url>' short`, `... 5m`;
+2. the wording of the request: "briefly", "in short" → `short`; "in detail" → `long`;
+   "a 5-minute read" → `5m` (in any language);
+3. `config get summaryLength` (default `medium`).
+
+What each size includes is in `references/summary-template.md`.
+
 Then run `finalize '<dir>'`: it fills in the reading time. Run it again after any edit.
+With an `<N>m` size, compare `reading_minutes` from `finalize` to N: if it is off by
+more than about 30%, shorten or expand the summary once and run `finalize` again.
 
 ## 4. Readeck
 

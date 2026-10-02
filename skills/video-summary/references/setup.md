@@ -50,7 +50,10 @@ Launcher: `sh <skill-dir>/scripts/video-summary`. Config file: `config path`.
    keep `manual`.
 6. **Summary language** (`summaryLanguage`): `auto` (the language the user writes to you
    in) or a code such as `ru`, `en`.
-7. **Readeck** (optional): URL and a key file (same key-file command, file
+7. **Summary size** (`summaryLength`): `short` (TL;DR and key ideas), `medium` (default,
+   the full template), `long` (in depth) or `<N>m`, a target reading time of 1-60
+   minutes. It is the default: a size in the request overrides it.
+8. **Readeck** (optional): URL and a key file (same key-file command, file
    `~/.config/video-summary/readeck.key`). Skip if the user does not use it; to turn an
    existing Readeck export off later: `config set readeck null`.
 
@@ -60,6 +63,7 @@ Launcher: `sh <skill-dir>/scripts/video-summary`. Config file: `config path`.
 sh <skill-dir>/scripts/video-summary config init          # defaults; --force overwrites
 sh <skill-dir>/scripts/video-summary config set outputDir '"~/Documents/video-summaries"'
 sh <skill-dir>/scripts/video-summary config set summaryLanguage '"auto"'
+sh <skill-dir>/scripts/video-summary config set summaryLength '"medium"'
 sh <skill-dir>/scripts/video-summary config set subtitles '"manual"'
 sh <skill-dir>/scripts/video-summary config set bitrate '"adaptive"'
 sh <skill-dir>/scripts/video-summary config set providers '[{"name":"groq","type":"openai-compatible","preset":"groq","tier":"free","keyFile":"~/.config/video-summary/groq.key"}]'

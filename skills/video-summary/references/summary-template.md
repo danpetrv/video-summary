@@ -29,6 +29,18 @@ The gist of the section, key points as a list, numbers and facts.
 ## 🗺️ Diagram           (mermaid, only if the video has a process/structure/comparison)
 ```
 
+Sizes (see SKILL.md, step 3, for how the size is chosen):
+
+- `short`: the header block, TL;DR and Key ideas only (5-8 points). No Contents,
+  By section, Quotes, Mentioned or Diagram. About 1-2 minutes of reading.
+- `medium` (default): the full template above.
+- `long`: the full template, in depth: a finer Contents; in By section the arguments,
+  examples, numbers and who said what for every section; Quotes and Mentioned filled
+  generously.
+- `<N>m`: a target reading time of N minutes. N <= 2: the `short` structure; otherwise
+  the `medium` structure, with the depth of By section and Key ideas scaled to fit N.
+  TL;DR stays 3-5 points at any size.
+
 Rules:
 
 - Leave `{{reading_time}}` literally in the file: `finalize <dir>` replaces it with the
