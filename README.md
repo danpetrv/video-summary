@@ -1,3 +1,5 @@
+![video-summary](assets/banner.png)
+
 # video-summary
 
 An [Agent Skills](https://agentskills.io) skill that turns a YouTube link, a video URL or a
