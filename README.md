@@ -90,6 +90,23 @@ The bundle is committed and CI verifies it matches a fresh build, so the bun ver
 pinned together with it (`bun-version: 1.4.2` in `.github/workflows/ci.yml`); bump both
 at once.
 
+### Releasing
+
+Merge to `main`, then push a tag:
+
+```sh
+git tag -a v0.1.3 -m "v0.1.3" && git push origin v0.1.3
+```
+
+`.github/workflows/release.yml` runs the CI checks and creates the GitHub release. The notes
+are built from the commits since the previous tag (`bun scripts/release-notes.ts <tag>`
+previews them): `feat:` → Features, `fix:` → Fixes, the rest → Other, `build:` commits are
+skipped, and `Fixes #N` in a commit body becomes a link. A tag with a suffix
+(`v0.2.0-rc.1`) becomes a pre-release.
+
+Users of `npx skills add danpetrv/video-summary` get `main`; a release can be pinned with
+`npx skills add danpetrv/video-summary#v0.1.2`.
+
 ## License
 
 MIT

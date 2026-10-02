@@ -1,0 +1,33 @@
+name: release
+# Push a tag like v1.2.3 → the same checks as CI, then a GitHub release with notes built
+# from the commits since the previous tag. Tags with a suffix (v1.3.0-rc.1) become pre-releases.
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tags and history for the notes
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - run: bun test
+      - run: bunx tsc --noEmit
+      - run: bun run check:bun-free
+      - run: bun run build && git diff --exit-code skills/
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          bun scripts/release-notes.ts "$TAG" > notes.md
+          cat notes.md
+          pre=""
+          case "$TAG" in *-*) pre="--prerelease" ;; esac
+          gh release create "$TAG" --title "$TAG" --notes-file notes.md --verify-tag $pre
