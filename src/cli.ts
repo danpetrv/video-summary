@@ -122,7 +122,7 @@ export async function main(argv: string[], d: CliDeps): Promise<unknown> {
     case "readeck": {
       if (!rest[0]) throw new UserError(USAGE);
       const cfg = await requireConfig(path);
-      return sendToReadeck(resolveInputPath(rest[0], d.cwd, d.home), { readeck: cfg.readeck, fetch: d.fetch, env: d.env, home: d.home });
+      return sendToReadeck(resolveInputPath(rest[0], d.cwd, d.home), { readeck: cfg.readeck, fetch: d.fetch, env: d.env, home: d.home, run: d.run });
     }
     default:
       throw new UserError(USAGE);

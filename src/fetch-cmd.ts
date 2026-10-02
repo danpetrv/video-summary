@@ -37,7 +37,7 @@ type Got = { cues: Cue[]; source: Source; asr: AsrResult | null };
 type Item = {
   sourceKey: string; title: string; url: string | null; path: string | null; id: string | null;
   uploader: string | null; upload_date: string | null; duration: number | null; language: string | null;
-  privateSource: boolean;
+  thumbnail: string | null; privateSource: boolean;
 };
 
 async function coversDuration(ogg: string, expected: number, run: Runner): Promise<boolean> {
@@ -108,7 +108,7 @@ export async function fetchCmd(input: string, flags: FetchFlags, d: FetchDeps): 
     item = {
       sourceKey: `${vm.extractor_key}:${vm.id}`, title: vm.title, url: vm.webpage_url, path: null, id: vm.id,
       uploader: vm.uploader, upload_date: vm.upload_date, duration: vm.duration, language: vm.language,
-      privateSource: vm.extractor_key === "Generic",
+      thumbnail: vm.thumbnail ?? null, privateSource: vm.extractor_key === "Generic",
     };
     const manual = pickManualTrack(vm);
     const auto = !manual && d.cfg.subtitles === "manual+auto" ? pickAutoTrack(vm) : null;
@@ -144,7 +144,8 @@ export async function fetchCmd(input: string, flags: FetchFlags, d: FetchDeps): 
     }
     item = {
       sourceKey: `file:${abs}`, title: basename(abs, extname(abs)), url: null, path: abs, id: null,
-      uploader: null, upload_date: null, duration: await probeDuration(abs, d.run), language: null, privateSource: true,
+      uploader: null, upload_date: null, duration: await probeDuration(abs, d.run), language: null,
+      thumbnail: null, privateSource: true,
     };
     get = async (work) => {
       const lang = d.cfg.summaryLanguage === "auto" ? null : d.cfg.summaryLanguage;
@@ -189,6 +190,7 @@ export async function fetchCmd(input: string, flags: FetchFlags, d: FetchDeps): 
     transcript_tokens: estimateTokens(transcript),
     readeck_bookmark_id: prev?.readeck_bookmark_id ?? null,
     readeck_summary_sha: prev?.readeck_summary_sha ?? null,
+    thumbnail: item.thumbnail,
   };
   await writeMeta(dir, meta);
   return toResult(meta, dir, transcriptPath, summaryPath);

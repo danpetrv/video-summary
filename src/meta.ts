@@ -20,6 +20,7 @@ export type Meta = {
   transcript_tokens: number;
   readeck_bookmark_id: string | null;
   readeck_summary_sha: string | null; // sha256 отправленного summary.md — чтобы заметить переписанный конспект
+  thumbnail?: string | null; // обложка для Readeck от yt-dlp; нет в meta.json, записанных до v0.3.0
 };
 
 export async function readMeta(dir: string): Promise<Meta | null> {

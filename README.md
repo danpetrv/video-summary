@@ -82,7 +82,9 @@ overrides the whole path:
 ```
 
 `subtitles: "manual+auto"` also uses YouTube auto captions before recognition.
-`readeck: null` disables the export (`config set readeck null`).
+`readeck: null` disables the export (`config set readeck null`). A Readeck bookmark gets the
+video thumbnail as its picture; for a local file, the first non-black frame of the first
+minute (or the cover art of an audio file) is shown in the text instead.
 
 ## Development
 

@@ -2,7 +2,7 @@
 import { homedir } from "node:os";
 
 // src/cli.ts
-import { stat as stat2 } from "node:fs/promises";
+import { stat as stat3 } from "node:fs/promises";
 
 // src/config.ts
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -1200,6 +1200,7 @@ async function fetchCmd(input, flags, d) {
       upload_date: vm.upload_date,
       duration: vm.duration,
       language: vm.language,
+      thumbnail: vm.thumbnail ?? null,
       privateSource: vm.extractor_key === "Generic"
     };
     const manual = pickManualTrack(vm);
@@ -1247,6 +1248,7 @@ async function fetchCmd(input, flags, d) {
       upload_date: null,
       duration: await probeDuration(abs, d.run),
       language: null,
+      thumbnail: null,
       privateSource: true
     };
     get = async (work) => {
@@ -1290,7 +1292,8 @@ async function fetchCmd(input, flags, d) {
     created_at: d.now.toISOString(),
     transcript_tokens: estimateTokens(transcript),
     readeck_bookmark_id: prev?.readeck_bookmark_id ?? null,
-    readeck_summary_sha: prev?.readeck_summary_sha ?? null
+    readeck_summary_sha: prev?.readeck_summary_sha ?? null,
+    thumbnail: item.thumbnail
   };
   await writeMeta(dir, meta);
   return toResult(meta, dir, transcriptPath, summaryPath);
@@ -1314,8 +1317,8 @@ function toResult(meta, dir, transcriptPath, summaryPath) {
 
 // src/readeck.ts
 import { createHash } from "node:crypto";
-import { readFile as readFile5, stat } from "node:fs/promises";
-import { join as join6 } from "node:path";
+import { readFile as readFile6, stat as stat2 } from "node:fs/promises";
+import { join as join7 } from "node:path";
 
 // node_modules/marked/lib/marked.esm.js
 function I() {
@@ -2743,18 +2746,80 @@ var xn = k.parseInline;
 var Rn = T.parse;
 var Tn = R.lex;
 
+// src/cover.ts
+import { access as access2, mkdtemp, readFile as readFile5, rm as rm3, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join as join6 } from "node:path";
+var SCAN_SECONDS = "60";
+var MIN_LUMA = "24";
+var SCALE = "scale='min(1280,iw)':-2";
+async function coverFor(meta, run) {
+  if (meta.thumbnail)
+    return { src: meta.thumbnail, remote: true };
+  if (meta.source_key.startsWith("Youtube:") && meta.id) {
+    return { src: `https://i.ytimg.com/vi/${meta.id}/hqdefault.jpg`, remote: true };
+  }
+  if (!meta.path || !run)
+    return null;
+  const exists = await access2(meta.path).then(() => true, () => false);
+  if (!exists)
+    return null;
+  const work = await mkdtemp(join6(tmpdir(), "vs-cover-"));
+  try {
+    const out = join6(work, "cover.jpg");
+    const nonBlack = `signalstats,metadata=select:key=lavfi.signalstats.YAVG:value=${MIN_LUMA}:function=greater,${SCALE}`;
+    for (const vf of [nonBlack, SCALE]) {
+      await run([
+        "ffmpeg",
+        "-nostdin",
+        "-loglevel",
+        "error",
+        "-y",
+        "-t",
+        SCAN_SECONDS,
+        "-i",
+        meta.path,
+        "-vf",
+        vf,
+        "-frames:v",
+        "1",
+        "-q:v",
+        "3",
+        out
+      ]);
+      const size = await stat(out).then((s) => s.size, () => 0);
+      if (size > 0)
+        return { src: `data:image/jpeg;base64,${(await readFile5(out)).toString("base64")}`, remote: false };
+    }
+    return null;
+  } finally {
+    await rm3(work, { recursive: true, force: true });
+  }
+}
+
 // src/readeck.ts
 var POLLS = 15;
 var TIMEOUT_MS = 15000;
 var esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-function renderHtml(markdown, title) {
+function renderHtml(markdown, title, cover, link) {
   const tokens = k.lexer(markdown);
   const section = tokens.findIndex((t) => t.type === "heading" && t.depth > 1);
   const i = tokens.findIndex((t, n) => t.type === "blockquote" && (section < 0 || n < section));
   if (i >= 0)
     tokens.splice(i, 1, ...k.lexer(tokens[i].text, { gfm: true, breaks: true }));
-  const body = k.parser(tokens, { async: false });
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title></head><body>${body}</body></html>`;
+  let body = k.parser(tokens, { async: false });
+  let head = "";
+  if (cover) {
+    const img = `<img src="${esc(cover.src)}" alt="">`;
+    const p = `<p>${link ? `<a href="${esc(link)}">${img}</a>` : img}</p>
+`;
+    const h1 = body.startsWith("<h1") ? body.indexOf(`</h1>
+`) : -1;
+    body = h1 >= 0 ? body.slice(0, h1 + 6) + p + body.slice(h1 + 6) : p + body;
+    if (cover.remote)
+      head = `<meta property="og:image" content="${esc(cover.src)}">`;
+  }
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title>${head}</head><body>${body}</body></html>`;
 }
 
 class NetError extends Error {
@@ -2763,8 +2828,8 @@ async function sendToReadeck(dir, d) {
   if (!d.readeck)
     return { status: "disabled", bookmark_id: null };
   const rd = d.readeck;
-  const summaryPath = join6(dir, "summary.md");
-  const exists = await stat(summaryPath).then(() => true, () => false);
+  const summaryPath = join7(dir, "summary.md");
+  const exists = await stat2(summaryPath).then(() => true, () => false);
   if (!exists)
     throw new UserError(`write summary.md first in ${dir}`);
   const meta = await readMeta(dir);
@@ -2783,7 +2848,7 @@ async function sendToReadeck(dir, d) {
       throw new NetError(netErrorTag(e));
     }
   };
-  const markdown = await readFile5(summaryPath, "utf8");
+  const markdown = await readFile6(summaryPath, "utf8");
   const sha = createHash("sha256").update(markdown).digest("hex");
   let replaced = null;
   try {
@@ -2814,7 +2879,7 @@ async function sendToReadeck(dir, d) {
     form.append("url", meta.url ?? `https://local.invalid/${slugify(meta.title)}`);
     form.append("title", meta.title);
     form.append("labels", rd.label || "video-summary");
-    const html = renderHtml(markdown, meta.title);
+    const html = renderHtml(markdown, meta.title, await coverFor(meta, d.run), meta.url);
     form.append("html", new File([html], "_", { type: "text/html" }));
     const r = await call(`${base}/api/bookmarks`, { method: "POST", headers: auth, body: form });
     if (r.status === 401)
@@ -2857,8 +2922,8 @@ async function sendToReadeck(dir, d) {
 }
 
 // src/summary.ts
-import { readFile as readFile6, writeFile as writeFile4 } from "node:fs/promises";
-import { join as join7 } from "node:path";
+import { readFile as readFile7, writeFile as writeFile4 } from "node:fs/promises";
+import { join as join8 } from "node:path";
 var WPM = 200;
 var PLACEHOLDER = "{{reading_time}}";
 function stripFences(md) {
@@ -2902,10 +2967,10 @@ function applyReadingTime(markdown) {
 `);
 }
 async function finalizeSummary(dir) {
-  const path = join7(dir, "summary.md");
+  const path = join8(dir, "summary.md");
   let text;
   try {
-    text = await readFile6(path, "utf8");
+    text = await readFile7(path, "utf8");
   } catch (e) {
     if (e.code === "ENOENT")
       throw new UserError(`write summary.md first in ${dir}`);
@@ -2937,7 +3002,7 @@ async function check(d, path) {
   } catch (e) {
     if (!(e instanceof UserError))
       throw e;
-    config.exists = await stat2(path).then(() => true, () => false);
+    config.exists = await stat3(path).then(() => true, () => false);
     config.error = e.message;
   }
   const providers = cfg ? (await probeProviders(cfg.providers.map(resolveProvider), d.fetch, d.env, d.home)).map((c) => ({
@@ -2981,7 +3046,7 @@ async function configCmd(args, d, path) {
       return { value: v };
     }
     case "init": {
-      const exists = await stat2(path).then(() => true, () => false);
+      const exists = await stat3(path).then(() => true, () => false);
       if (exists && !rest.includes("--force"))
         throw new UserError(`config exists: ${path} (use --force to overwrite)`);
       await saveConfig(path, DEFAULT_CONFIG);
@@ -3032,7 +3097,7 @@ async function main(argv, d) {
       if (!rest[0])
         throw new UserError(USAGE);
       const cfg = await requireConfig(path);
-      return sendToReadeck(resolveInputPath(rest[0], d.cwd, d.home), { readeck: cfg.readeck, fetch: d.fetch, env: d.env, home: d.home });
+      return sendToReadeck(resolveInputPath(rest[0], d.cwd, d.home), { readeck: cfg.readeck, fetch: d.fetch, env: d.env, home: d.home, run: d.run });
     }
     default:
       throw new UserError(USAGE);
@@ -3042,7 +3107,7 @@ async function main(argv, d) {
 // src/exec.ts
 import { spawn } from "node:child_process";
 import { accessSync, constants } from "node:fs";
-import { delimiter, join as join8 } from "node:path";
+import { delimiter, join as join9 } from "node:path";
 var run = (cmd, opts) => new Promise((resolve) => {
   const [bin, ...args] = cmd;
   const child = spawn(bin, args, { cwd: opts?.cwd, stdio: ["ignore", "pipe", "pipe"] });
@@ -3058,7 +3123,7 @@ function has(bin) {
     if (!dir)
       continue;
     try {
-      accessSync(join8(dir, bin), constants.X_OK);
+      accessSync(join9(dir, bin), constants.X_OK);
       return true;
     } catch {}
   }

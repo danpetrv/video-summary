@@ -90,6 +90,13 @@ test("URL with manual subs -> youtube-manual-subs, no ASR, url = webpage_url", a
   expect(r.summary_path).toBe(join(r.dir, "summary.md"));
 });
 
+test("thumbnail from yt-dlp is kept in meta for the Readeck cover; none -> null", async () => {
+  const r = await fetchCmd(URL1, flags, deps({ meta: { ...ytMeta, thumbnail: "https://i.ytimg.com/vi/x/maxresdefault.jpg" } }));
+  expect((await readMeta(r.dir))!.thumbnail).toBe("https://i.ytimg.com/vi/x/maxresdefault.jpg");
+  const r2 = await fetchCmd(URL1, { ...flags, force: true }, deps({ meta: { ...ytMeta, thumbnail: undefined } }));
+  expect((await readMeta(r2.dir))!.thumbnail).toBeNull();
+});
+
 test("URL without manual subs -> audio -> whisperx with diarization", async () => {
   const r = await fetchCmd(URL1, flags, deps({ meta: noMeta }));
   expect([r.source, r.asr_provider, r.diarized, r.speakers]).toEqual(["asr", "wx", true, 2]);

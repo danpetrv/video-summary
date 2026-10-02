@@ -19,6 +19,7 @@ export type VideoMeta = {
   language: string | null;
   is_live: boolean | null;
   webpage_url: string;
+  thumbnail?: string | null;
   subtitles: Record<string, unknown[]>;
   automatic_captions: Record<string, unknown[]>;
 };

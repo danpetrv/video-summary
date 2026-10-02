@@ -3,17 +3,18 @@ import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { type Tokens, marked } from "marked";
 import { type ReadeckConfig, keySource, readKey } from "./config";
+import { type Cover, coverFor } from "./cover";
 import { readMeta, writeMeta } from "./meta";
 import { netErrorTag, oneLine } from "./net";
 import { slugify } from "./paths";
-import { type Fetcher, UserError } from "./types";
+import { type Fetcher, type Runner, UserError } from "./types";
 
 export type ReadeckResult = {
   status: "sent" | "already-sent" | "skipped" | "disabled"; bookmark_id: string | null; reason?: string;
 };
 type Deps = {
   readeck: ReadeckConfig | null; fetch: Fetcher; env: Record<string, string | undefined>; home: string;
-  sleep?: (ms: number) => Promise<void>;
+  sleep?: (ms: number) => Promise<void>; run?: Runner;
 };
 
 const POLLS = 15;
@@ -24,14 +25,23 @@ const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replac
  * Mermaid stays a code block: Readeck strips scripts; the full version is summary.md.
  * The header quote (before the first section heading) becomes a plain paragraph with line breaks: Readeck keeps
  * only readability's best block, and when the rest of the summary is lists that block was the header <blockquote>.
+ * The cover goes right after the title (linked to the video); a remote one is also og:image, the bookmark's picture.
  */
-export function renderHtml(markdown: string, title: string): string {
+export function renderHtml(markdown: string, title: string, cover?: Cover | null, link?: string | null): string {
   const tokens = marked.lexer(markdown);
   const section = tokens.findIndex((t) => t.type === "heading" && t.depth > 1);
   const i = tokens.findIndex((t, n) => t.type === "blockquote" && (section < 0 || n < section));
   if (i >= 0) tokens.splice(i, 1, ...marked.lexer((tokens[i] as Tokens.Blockquote).text, { gfm: true, breaks: true }));
-  const body = marked.parser(tokens, { async: false });
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title></head><body>${body}</body></html>`;
+  let body = marked.parser(tokens, { async: false });
+  let head = "";
+  if (cover) {
+    const img = `<img src="${esc(cover.src)}" alt="">`;
+    const p = `<p>${link ? `<a href="${esc(link)}">${img}</a>` : img}</p>\n`;
+    const h1 = body.startsWith("<h1") ? body.indexOf("</h1>\n") : -1;
+    body = h1 >= 0 ? body.slice(0, h1 + 6) + p + body.slice(h1 + 6) : p + body;
+    if (cover.remote) head = `<meta property="og:image" content="${esc(cover.src)}">`;
+  }
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title>${head}</head><body>${body}</body></html>`;
 }
 
 class NetError extends Error {}
@@ -93,7 +103,7 @@ export async function sendToReadeck(dir: string, d: Deps): Promise<ReadeckResult
     form.append("url", meta.url ?? `https://local.invalid/${slugify(meta.title)}`);
     form.append("title", meta.title);
     form.append("labels", rd.label || "video-summary");
-    const html = renderHtml(markdown, meta.title);
+    const html = renderHtml(markdown, meta.title, await coverFor(meta, d.run), meta.url);
     form.append("html", new File([html], "_", { type: "text/html" }));
     const r = await call(`${base}/api/bookmarks`, { method: "POST", headers: auth, body: form });
     if (r.status === 401) return { status: "skipped", bookmark_id: null, reason: "Readeck rejected the token (401)" };
