@@ -61,7 +61,16 @@ test("no bun, node v22.3.0 -> exec node ...mjs", () => {
 test("no bun, node v18.20.0 -> unsupported JSON, code 1", () => {
   const r = launch(makePath("c", { node: "v18.20.0" }));
   expect(r.code).toBe(1);
-  expect(JSON.parse(r.out)).toEqual({ ok: false, runtime: "unsupported", found: "node v18.20.0", install: INSTALL });
+  // #4: Node is there, just old — offer a Node upgrade only, not Bun.
+  expect(JSON.parse(r.out)).toEqual({
+    ok: false, runtime: "unsupported", found: "node v18.20.0", install: ["fnm install --lts", "brew install node"],
+  });
+});
+
+test("odd node -v output stays valid JSON", () => {
+  const r = launch(makePath("e", { node: 'v18.0.0\\"x' })); // the fake prints: v18.0.0"x
+  expect(r.code).toBe(1);
+  expect(JSON.parse(r.out).found).toBe("node v18.0.0x");
 });
 
 test("neither bun nor node -> missing JSON, code 1", () => {

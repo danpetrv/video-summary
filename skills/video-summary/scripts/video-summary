@@ -1,11 +1,14 @@
 #!/bin/sh
 # Pick a runtime: bun if present, else node >= 20.
 INSTALL='["curl -fsSL https://bun.sh/install | bash","brew install oven-sh/bun/bun","brew install node","fnm install --lts"]'
+# Node is installed but too old: offer a Node upgrade, not a second runtime.
+UPGRADE_NODE='["fnm install --lts","brew install node"]'
 dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 if command -v bun >/dev/null 2>&1; then exec bun "$dir/video-summary.mjs" "$@"; fi
 if command -v node >/dev/null 2>&1; then
-  v=$(node -v); major=$(printf %s "$v" | sed 's/^v\([0-9]*\).*/\1/')
+  # Keep only version characters so the JSON below stays valid whatever `node -v` prints.
+  v=$(node -v | sed 's/[^A-Za-z0-9.+-]//g'); major=$(printf %s "$v" | sed 's/^v\{0,1\}\([0-9]*\).*/\1/')
   if [ "$major" -ge 20 ] 2>/dev/null; then exec node "$dir/video-summary.mjs" "$@"; fi
-  printf '{"ok":false,"runtime":"unsupported","found":"node %s","install":%s}\n' "$v" "$INSTALL"; exit 1
+  printf '{"ok":false,"runtime":"unsupported","found":"node %s","install":%s}\n' "$v" "$UPGRADE_NODE"; exit 1
 fi
 printf '{"ok":false,"runtime":"missing","install":%s}\n' "$INSTALL"; exit 1
