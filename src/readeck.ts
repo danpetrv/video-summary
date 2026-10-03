@@ -25,7 +25,8 @@ const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replac
  * Mermaid stays a code block: Readeck strips scripts; the full version is summary.md.
  * The header quote (before the first section heading) becomes a plain paragraph with line breaks: Readeck keeps
  * only readability's best block, and when the rest of the summary is lists that block was the header <blockquote>.
- * The cover goes right after the title (linked to the video); a remote one is also og:image, the bookmark's picture.
+ * A remote cover is og:image only, the bookmark's picture. A data URI cannot be og:image, so a local cover goes
+ * into the text right after the title (linked to the source, if there is one).
  */
 export function renderHtml(markdown: string, title: string, cover?: Cover | null, link?: string | null): string {
   const tokens = marked.lexer(markdown);
@@ -34,12 +35,13 @@ export function renderHtml(markdown: string, title: string, cover?: Cover | null
   if (i >= 0) tokens.splice(i, 1, ...marked.lexer((tokens[i] as Tokens.Blockquote).text, { gfm: true, breaks: true }));
   let body = marked.parser(tokens, { async: false });
   let head = "";
-  if (cover) {
+  if (cover?.remote) {
+    head = `<meta property="og:image" content="${esc(cover.src)}">`;
+  } else if (cover) {
     const img = `<img src="${esc(cover.src)}" alt="">`;
     const p = `<p>${link ? `<a href="${esc(link)}">${img}</a>` : img}</p>\n`;
     const h1 = body.startsWith("<h1") ? body.indexOf("</h1>\n") : -1;
     body = h1 >= 0 ? body.slice(0, h1 + 6) + p + body.slice(h1 + 6) : p + body;
-    if (cover.remote) head = `<meta property="og:image" content="${esc(cover.src)}">`;
   }
   return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title>${head}</head><body>${body}</body></html>`;
 }

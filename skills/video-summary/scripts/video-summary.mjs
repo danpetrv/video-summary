@@ -2834,15 +2834,15 @@ function renderHtml(markdown, title, cover, link) {
     tokens.splice(i, 1, ...k.lexer(tokens[i].text, { gfm: true, breaks: true }));
   let body = k.parser(tokens, { async: false });
   let head = "";
-  if (cover) {
+  if (cover?.remote) {
+    head = `<meta property="og:image" content="${esc(cover.src)}">`;
+  } else if (cover) {
     const img = `<img src="${esc(cover.src)}" alt="">`;
     const p = `<p>${link ? `<a href="${esc(link)}">${img}</a>` : img}</p>
 `;
     const h1 = body.startsWith("<h1") ? body.indexOf(`</h1>
 `) : -1;
     body = h1 >= 0 ? body.slice(0, h1 + 6) + p + body.slice(h1 + 6) : p + body;
-    if (cover.remote)
-      head = `<meta property="og:image" content="${esc(cover.src)}">`;
   }
   return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title>${head}</head><body>${body}</body></html>`;
 }

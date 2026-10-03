@@ -67,14 +67,16 @@ test("renderHtml: the header quote is a top-level paragraph with line breaks, la
   expect(renderHtml("# T\n\n## S\n> q\n", "t")).toContain("<blockquote>\n<p>q</p>\n</blockquote>");
 });
 
-test("renderHtml: a remote cover is og:image plus a linked <img> after the title; a data URI cover is the <img> only", () => {
+test("renderHtml: a remote cover is og:image only; a data URI cover is an <img> after the title only", () => {
   const md = "# T\n\n> 📺 Chan\n\n## S\n- a\n";
   const remote = renderHtml(md, "t", { src: "https://i.ytimg.com/vi/x/hq.jpg?a=1&b=2", remote: true }, "https://y/w?v=x&t=1");
   expect(remote).toContain('<title>t</title><meta property="og:image" content="https://i.ytimg.com/vi/x/hq.jpg?a=1&amp;b=2"></head>');
-  expect(remote).toContain('<h1>T</h1>\n<p><a href="https://y/w?v=x&amp;t=1"><img src="https://i.ytimg.com/vi/x/hq.jpg?a=1&amp;b=2" alt=""></a></p>\n<p>📺 Chan</p>');
+  expect(remote).toContain("<h1>T</h1>\n<p>📺 Chan</p>");
+  expect(remote).not.toContain("<img");
   const local = renderHtml(md, "t", { src: "data:image/jpeg;base64,/9j/", remote: false }, null);
   expect(local).not.toContain("og:image");
   expect(local).toContain('<h1>T</h1>\n<p><img src="data:image/jpeg;base64,/9j/" alt=""></p>\n');
+  expect(renderHtml(md, "t", { src: "data:x", remote: false }, "https://y")).toContain('<h1>T</h1>\n<p><a href="https://y"><img src="data:x" alt=""></a></p>\n');
   expect(renderHtml("no title\n", "t", { src: "data:x", remote: false }, null)).toContain('<body><p><img src="data:x" alt=""></p>\n<p>no title</p>');
   expect(renderHtml(md, "t")).not.toContain("<img");
 });
@@ -85,7 +87,7 @@ test("send: the cover from meta.thumbnail goes into the uploaded html", async ()
   await sendToReadeck(dir, { ...base, fetch: f, sleep });
   const html = await ((calls.find((c) => c.init?.method === "POST")!.init!.body as FormData).get("html") as File).text();
   expect(html).toContain('<meta property="og:image" content="https://i.ytimg.com/vi/x/maxresdefault.jpg">');
-  expect(html).toContain('<img src="https://i.ytimg.com/vi/x/maxresdefault.jpg"');
+  expect(html).not.toContain("<img");
 });
 
 test("no summary.md -> UserError", async () => {
