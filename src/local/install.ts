@@ -11,6 +11,7 @@ import { BUILDS, type BuildId, type BuildPin, MODEL, type ModelPin, PARAKEET_VER
 export type LocalDeps = {
   run: Runner; fetch: Fetcher; env: Record<string, string | undefined>; home: string;
   platform: Platform; arch: "x64" | "arm64"; exists: (p: string) => boolean; has: (bin: string) => boolean;
+  downloadIdleMs?: number; // a download with no headers or bytes for this long gives up (default DOWNLOAD_IDLE_MS)
 };
 /** Injectable for tests: fixture sizes and hashes instead of the real release. */
 export type Pins = { BUILDS: Record<BuildId, BuildPin>; MODEL: ModelPin };
@@ -24,6 +25,9 @@ export type LocalInstallResult = {
 };
 
 const DEFAULT_PINS: Pins = { BUILDS, MODEL };
+
+/** A stalled download (no response headers or no new bytes for this long) is aborted. */
+export const DOWNLOAD_IDLE_MS = 60_000;
 
 /** Builds for this machine: GPU first, then the CPU fallback (device "auto": install covers both paths). */
 function plannedBuilds(d: LocalDeps, vulkanLib: boolean): BuildId[] {
@@ -58,7 +62,7 @@ export async function localInstall(d: LocalDeps, pins: Pins = DEFAULT_PINS): Pro
   const builds = plannedBuilds(d, findVulkanLib(d.exists));
   let downloaded = 0;
   for (const b of builds) downloaded += await ensureBuild(d, paths, b, pins.BUILDS[b]);
-  downloaded += await ensureModel(d.fetch, paths.model, pins.MODEL);
+  downloaded += await ensureModel(d, paths.model, pins.MODEL);
   return { version: PARAKEET_VERSION, builds, model: { path: paths.model, bytes: pins.MODEL.size }, downloaded_bytes: downloaded };
 }
 
@@ -71,7 +75,7 @@ async function ensureBuild(d: LocalDeps, paths: LocalPaths, build: BuildId, pin:
   const tmp = await mkdtemp(join(dirname(target), `.${build}-`));
   try {
     const archive = join(tmp, pin.asset);
-    const bytes = await download(d.fetch, RELEASE_URL + pin.asset, archive, pin, pin.asset);
+    const bytes = await download(d, RELEASE_URL + pin.asset, archive, pin, pin.asset);
     const r = await d.run(["tar", "-xzf", archive, "-C", tmp]);
     if (r.code !== 0) throw new UserError(`could not unpack ${pin.asset}: ${oneLine(r.stderr).slice(0, 300)}`);
     const unpacked = join(tmp, `parakeet-${PARAKEET_VERSION}-bin-${build}`);
@@ -90,13 +94,13 @@ async function ensureBuild(d: LocalDeps, paths: LocalPaths, build: BuildId, pin:
 }
 
 /** Re-downloads unless the file is there with the pinned size and sha256; then drops stale `.part` files. */
-async function ensureModel(fetch: Fetcher, path: string, pin: ModelPin): Promise<number> {
+async function ensureModel(d: LocalDeps, path: string, pin: ModelPin): Promise<number> {
   await mkdir(dirname(path), { recursive: true });
   const check = await verify(path, pin);
   // A bad file goes first: a failed re-download must not leave it for `status` to call verified (size only).
   // Same inode only, so a verified file a concurrent run has just renamed in is kept.
   if (check.bad && (await stat(path).catch(() => null))?.ino === check.bad.ino) await rm(path, { force: true });
-  const bytes = check.ok ? 0 : await download(fetch, pin.url, path, pin, pin.file);
+  const bytes = check.ok ? 0 : await download(d, pin.url, path, pin, pin.file);
   // Leftovers of interrupted runs. A concurrent download whose .part goes too accepts our verified file.
   const prefix = `${basename(path)}.`;
   for (const name of await readdir(dirname(path))) {
@@ -117,24 +121,47 @@ async function net<T>(file: string, p: () => Promise<T>): Promise<T> {
 }
 
 /**
- * Streams `url` into a unique `<target>.<random>.part` while hashing, checks size and sha256,
- * renames onto `target`. On any failure the .part is removed. Returns the bytes received.
+ * `p`, or a TimeoutError once `ms` pass without it settling; the timeout also aborts `ac`, which
+ * tears the request down (a fetcher that ignores the signal still cannot hang the download).
  */
-async function download(fetch: Fetcher, url: string, target: string, pin: { size: number; sha256: string }, file: string): Promise<number> {
+async function idle<T>(p: Promise<T>, ms: number, ac: AbortController): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const stalled = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const e = new DOMException("download stalled", "TimeoutError");
+      ac.abort(e);
+      reject(e);
+    }, ms);
+  });
+  try {
+    return await Promise.race([p, stalled]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Streams `url` into a unique `<target>.<random>.part` while hashing, checks size and sha256,
+ * renames onto `target`. Waiting for headers and for each chunk is limited by the idle timeout.
+ * On any failure the .part is removed. Returns the bytes received.
+ */
+async function download(d: LocalDeps, url: string, target: string, pin: { size: number; sha256: string }, file: string): Promise<number> {
   const part = `${target}.${randomBytes(6).toString("hex")}.part`;
   const hash = createHash("sha256");
+  const ac = new AbortController();
+  const idleMs = d.downloadIdleMs ?? DOWNLOAD_IDLE_MS;
   let bytes = 0;
   const fh = await open(part, "wx");
   try {
     try {
-      const res = await net(file, () => fetch(url));
+      const res = await net(file, () => idle(d.fetch(url, { signal: ac.signal }), idleMs, ac));
       if (!res.ok) {
         await res.body?.cancel().catch(() => {});
         throw new UserError(`could not download ${file}: HTTP ${res.status}`);
       }
       const reader = res.body?.getReader();
       for (;;) {
-        const chunk = reader ? await net(file, () => reader.read()) : { done: true as const, value: undefined };
+        const chunk = reader ? await net(file, () => idle(reader.read(), idleMs, ac)) : { done: true as const, value: undefined };
         if (chunk.done) break;
         bytes += chunk.value.length;
         if (bytes > pin.size) {

@@ -213,6 +213,54 @@ test("install: network error -> UserError with the error code, not the message",
   expect(readdirSync(versionDir())).toEqual([]);
 });
 
+test("install: a body that stops sending -> TimeoutError after the idle timeout, request aborted, .part removed", async () => {
+  const d = { ...deps(), downloadIdleMs: 50 };
+  const fetch = d.fetch;
+  let signal: AbortSignal | undefined;
+  d.fetch = async (url, init) => {
+    if (url !== MODEL.url) return fetch(url, init);
+    signal = init?.signal ?? undefined;
+    let sent = false;
+    return new Response(new ReadableStream<Uint8Array>({
+      pull(c) {
+        if (sent) return new Promise(() => {}); // never yields again
+        sent = true;
+        c.enqueue(modelBytes.slice(0, 1000));
+      },
+    }));
+  };
+  const err = await localInstall(d, fixturePins()).catch((e) => e);
+  expect(err).toBeInstanceOf(UserError);
+  expect(err.message).toBe("could not download ultra-q8_0.gguf: TimeoutError");
+  expect(signal?.aborted).toBe(true);
+  expect(readdirSync(modelsDir())).toEqual([]);
+});
+
+test("install: response headers that never arrive -> the same TimeoutError", async () => {
+  const d = { ...deps(), downloadIdleMs: 50 };
+  let signal: AbortSignal | undefined;
+  d.fetch = (_url, init) => {
+    signal = init?.signal ?? undefined;
+    return new Promise(() => {}); // ignores the signal too: the timeout must not depend on it
+  };
+  const err = await localInstall(d, fixturePins()).catch((e) => e);
+  expect(err).toBeInstanceOf(UserError);
+  expect(err.message).toBe("could not download parakeet-v0.6.1-bin-linux-cpu-x64.tar.gz: TimeoutError");
+  expect(signal?.aborted).toBe(true);
+  expect(readdirSync(versionDir())).toEqual([]);
+});
+
+test("install: the idle timeout is per chunk, not for the whole download", async () => {
+  // ~13 model chunks 20 ms apart: longer in total than the 150 ms idle timeout
+  const d = { ...deps(), downloadIdleMs: 150 };
+  d.fetch = async (url) => {
+    const body = served.get(url);
+    return body ? chunked(body, 20) : new Response("not found", { status: 404 });
+  };
+  const r = await localInstall(d, fixturePins());
+  expect(r.downloaded_bytes).toBeGreaterThan(modelBytes.length);
+});
+
 test("install: HTTP error status -> UserError with the status", async () => {
   served.delete(MODEL.url);
   const err = await localInstall(deps(), fixturePins()).catch((e) => e);
