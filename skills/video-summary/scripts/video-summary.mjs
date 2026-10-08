@@ -106,7 +106,8 @@ function parseLocal(raw, path, seen) {
     device: oneOf(raw, "device", ["auto", "cpu"], path)
   };
 }
-function parseProvider(raw, i, seen, warnings) {
+var hasLegacyKeys = (raw) => isObj(raw) && raw.type !== "local" && (raw.preset !== undefined || REMOVED_PROVIDER_KEYS.some((k) => raw[k] !== undefined) || raw.type === "openai-compatible" && raw.diarize !== undefined);
+function parseProvider(raw, i, seen, warnings, fromV03 = false) {
   const path = `providers[${i}]`;
   if (!isObj(raw))
     return fail(path, "must be an object");
@@ -140,6 +141,9 @@ function parseProvider(raw, i, seen, warnings) {
     if (diarize !== undefined)
       p.diarize = diarize;
   }
+  if (raw.local === false || fromV03 && p.type === "openai-compatible" && raw.local !== true) {
+    warnings.push(`${path} ${JSON.stringify(name)}: now treated as your own server — local files are sent to it without asking`);
+  }
   return p;
 }
 function parseConfig(raw, warnings = []) {
@@ -168,7 +172,8 @@ function parseConfig(raw, warnings = []) {
     if (!Array.isArray(raw.providers))
       return fail("providers", "must be an array");
     const seen = new Set;
-    cfg.providers = raw.providers.map((p, i) => parseProvider(p, i, seen, warnings)).filter((p) => p !== null);
+    const fromV03 = raw.bitrate !== undefined || raw.providers.some(hasLegacyKeys);
+    cfg.providers = raw.providers.map((p, i) => parseProvider(p, i, seen, warnings, fromV03)).filter((p) => p !== null);
   }
   if (raw.readeck !== undefined && raw.readeck !== null) {
     const r = raw.readeck;
@@ -604,6 +609,7 @@ var PAUSE_SEC = 1;
 var SENTENCE_END = /[.?!…]$/;
 var UNK = "<unk>";
 var EPS = 0.000001;
+var VULKAN_DEVICE = /pk::Backend using device: Vulkan\d+/;
 function wordsToCues(words) {
   const cues = [];
   let cur = null;
@@ -656,10 +662,13 @@ async function transcribeParakeet(ogg, p, d) {
   const wav = `${ogg.replace(/\.[^./]*$/, "")}.wav`;
   const threads = String(Math.min(availableParallelism(), 8));
   const clock = d.clock ?? Date.now;
+  let pathStarted = null;
   const transcribe = async (build, env) => {
     const started = clock();
+    pathStarted ??= started;
     const r = await d.run([paths.cli(build), "transcribe", "--model", paths.model, "--input", wav, "--vad", "--json", "--threads", threads], env ? { timeoutMs: LOCAL_TIMEOUT_MS, env } : { timeoutMs: LOCAL_TIMEOUT_MS });
-    return { ...r, elapsedMs: clock() - started };
+    const ended = clock();
+    return { ...r, elapsedMs: ended - started, pathElapsedMs: ended - pathStarted };
   };
   const timedOut = () => new UserError(`${p.name}: timed out after ${LOCAL_TIMEOUT_MS / 1000} s`);
   try {
@@ -694,7 +703,11 @@ async function transcribeParakeet(ogg, p, d) {
         throw timedOut();
       if (g.code === 0) {
         r = g;
-        device = "gpu";
+        if (gpuBuild.startsWith("linux-vulkan-") && !VULKAN_DEVICE.test(g.stderr)) {
+          notes.push(`${p.name}: no GPU device found, ran on CPU`);
+        } else {
+          device = "gpu";
+        }
       } else {
         notes.push(`${p.name}: GPU run failed (${lastLine(g)}), used CPU`);
       }
@@ -716,7 +729,9 @@ async function transcribeParakeet(ogg, p, d) {
       speakers: 0,
       language: null,
       device,
-      elapsedMs: r.elapsedMs
+      elapsedMs: r.elapsedMs,
+      plannedDevice: gpuBuild ? "gpu" : "cpu",
+      pathElapsedMs: r.pathElapsedMs
     };
     if (notes.length)
       out.notes = notes;
@@ -1169,6 +1184,7 @@ import { createReadStream, statSync } from "node:fs";
 import { mkdir as mkdir3, mkdtemp, open, readdir, rename as rename3, rm as rm4, stat } from "node:fs/promises";
 import { basename, dirname as dirname3, join as join3 } from "node:path";
 var DEFAULT_PINS = { BUILDS, MODEL };
+var DOWNLOAD_IDLE_MS = 60000;
 function plannedBuilds(d, vulkanLib) {
   const p = planBuilds({ platform: d.platform, arch: d.arch, vulkanLib, device: "auto" });
   return [p.gpu, p.cpu].filter((b) => b !== null);
@@ -1197,7 +1213,7 @@ async function localInstall(d, pins = DEFAULT_PINS) {
   let downloaded = 0;
   for (const b of builds)
     downloaded += await ensureBuild(d, paths, b, pins.BUILDS[b]);
-  downloaded += await ensureModel(d.fetch, paths.model, pins.MODEL);
+  downloaded += await ensureModel(d, paths.model, pins.MODEL);
   return { version: PARAKEET_VERSION, builds, model: { path: paths.model, bytes: pins.MODEL.size }, downloaded_bytes: downloaded };
 }
 async function ensureBuild(d, paths, build, pin) {
@@ -1209,7 +1225,7 @@ async function ensureBuild(d, paths, build, pin) {
   const tmp = await mkdtemp(join3(dirname3(target), `.${build}-`));
   try {
     const archive = join3(tmp, pin.asset);
-    const bytes = await download(d.fetch, RELEASE_URL + pin.asset, archive, pin, pin.asset);
+    const bytes = await download(d, RELEASE_URL + pin.asset, archive, pin, pin.asset);
     const r = await d.run(["tar", "-xzf", archive, "-C", tmp]);
     if (r.code !== 0)
       throw new UserError(`could not unpack ${pin.asset}: ${oneLine(r.stderr).slice(0, 300)}`);
@@ -1228,12 +1244,12 @@ async function ensureBuild(d, paths, build, pin) {
     await rm4(tmp, { recursive: true, force: true });
   }
 }
-async function ensureModel(fetch, path, pin) {
+async function ensureModel(d, path, pin) {
   await mkdir3(dirname3(path), { recursive: true });
   const check = await verify(path, pin);
   if (check.bad && (await stat(path).catch(() => null))?.ino === check.bad.ino)
     await rm4(path, { force: true });
-  const bytes = check.ok ? 0 : await download(fetch, pin.url, path, pin, pin.file);
+  const bytes = check.ok ? 0 : await download(d, pin.url, path, pin, pin.file);
   const prefix = `${basename(path)}.`;
   for (const name of await readdir(dirname3(path))) {
     if (name.startsWith(prefix) && name.endsWith(".part"))
@@ -1249,21 +1265,38 @@ async function net(file, p) {
     throw new UserError(`could not download ${file}: ${netErrorTag(e)}`);
   }
 }
-async function download(fetch, url, target, pin, file) {
+async function idle(p, ms, ac) {
+  let timer;
+  const stalled = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const e = new DOMException("download stalled", "TimeoutError");
+      ac.abort(e);
+      reject(e);
+    }, ms);
+  });
+  try {
+    return await Promise.race([p, stalled]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+async function download(d, url, target, pin, file) {
   const part = `${target}.${randomBytes2(6).toString("hex")}.part`;
   const hash = createHash("sha256");
+  const ac = new AbortController;
+  const idleMs = d.downloadIdleMs ?? DOWNLOAD_IDLE_MS;
   let bytes = 0;
   const fh = await open(part, "wx");
   try {
     try {
-      const res = await net(file, () => fetch(url));
+      const res = await net(file, () => idle(d.fetch(url, { signal: ac.signal }), idleMs, ac));
       if (!res.ok) {
         await res.body?.cancel().catch(() => {});
         throw new UserError(`could not download ${file}: HTTP ${res.status}`);
       }
       const reader = res.body?.getReader();
       for (;; ) {
-        const chunk = reader ? await net(file, () => reader.read()) : { done: true, value: undefined };
+        const chunk = reader ? await net(file, () => idle(reader.read(), idleMs, ac)) : { done: true, value: undefined };
         if (chunk.done)
           break;
         bytes += chunk.value.length;
@@ -1528,6 +1561,9 @@ async function recognize(getAudio, work, item, flags, d) {
       const asr = await transcribeWith(provider, ogg, { language, diarize: flags.diarize }, d);
       if (provider.type === "local" && asr.device && asr.elapsedMs !== undefined) {
         await noteSpeed(speedFile, speedKey(provider, asr.device), durationSec, asr.elapsedMs);
+        if (asr.plannedDevice && asr.plannedDevice !== asr.device && asr.pathElapsedMs !== undefined) {
+          await noteSpeed(speedFile, speedKey(provider, asr.plannedDevice), durationSec, asr.pathElapsedMs);
+        }
       }
       return { asr, failed: [...failed, ...asr.notes ?? []] };
     } catch (e) {
