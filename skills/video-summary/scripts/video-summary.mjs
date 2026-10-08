@@ -602,12 +602,13 @@ var LOCAL_TIMEOUT_MS = 2 * 60 * 60000;
 var MAX_CUE_SEC = 30;
 var PAUSE_SEC = 1;
 var SENTENCE_END = /[.?!…]$/;
+var UNK = "<unk>";
 var EPS = 0.000001;
 function wordsToCues(words) {
   const cues = [];
   let cur = null;
   for (const word of words) {
-    const text = word.w.trim();
+    const text = word.w.replaceAll(UNK, "").trim();
     if (!text)
       continue;
     if (cur && (word.start - cur.end >= PAUSE_SEC - EPS || word.end - cur.start > MAX_CUE_SEC + EPS)) {

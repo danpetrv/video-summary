@@ -79,6 +79,15 @@ test("wordsToCues: breaks after . ? ! …, on gaps >= 1.0 s, and before a cue wo
   expect(wordsToCues([])).toEqual([]);
 });
 
+test("wordsToCues: drops the engine's <unk> token (it stands for « » in Russian speech); a word of only <unk> is skipped", () => {
+  const w = (text: string, start: number) => ({ w: text, start, end: start + 0.5 });
+  expect(wordsToCues([w("Читали", 0), w("<unk>Проект", 0.5), w("Феникс<unk>?", 1), w("<unk>", 1.5), w("Да.<unk>", 2)]))
+    .toEqual([
+      { start: 0, end: 1.5, text: "Читали Проект Феникс?" },
+      { start: 2, end: 2.5, text: "Да." },
+    ]);
+});
+
 test("transcribe: converts to 16 kHz mono wav, runs parakeet-cli transcribe --model <model> --input <wav> --vad --json --threads <min(cpus,8)> with timeoutMs 7200000", async () => {
   const m = machine({ builds: ["linux-cpu-x64"] });
   let t = 0;

@@ -14,6 +14,7 @@ export const LOCAL_TIMEOUT_MS = 2 * 60 * 60_000;
 const MAX_CUE_SEC = 30;
 const PAUSE_SEC = 1.0;
 const SENTENCE_END = /[.?!…]$/;
+const UNK = "<unk>";
 // Timestamps are centiseconds as floats: 4.1 - 3.1 = 0.9999999999999996 must count as 1.0.
 const EPS = 1e-6;
 
@@ -33,7 +34,8 @@ export function wordsToCues(words: Word[]): Cue[] {
   const cues: Cue[] = [];
   let cur: Cue | null = null;
   for (const word of words) {
-    const text = word.w.trim();
+    // The model has no « »: it emits <unk> there (seen in Russian runs), which markdown would read as a tag.
+    const text = word.w.replaceAll(UNK, "").trim();
     if (!text) continue;
     if (cur && (word.start - cur.end >= PAUSE_SEC - EPS || word.end - cur.start > MAX_CUE_SEC + EPS)) {
       cues.push(cur);
