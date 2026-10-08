@@ -128,7 +128,7 @@ test("transcribeWith: reads key file, dispatches by type; no key -> no Authoriza
   const dir = await mkdtemp(join(tmpdir(), "t6-"));
   await writeFile(join(dir, "tok"), "secret-token\n");
   const audio = join(import.meta.dir, "../fixtures/sample.ru.srt");
-  const verbose = await Bun.file(join(import.meta.dir, "../fixtures/groq-verbose.json")).text();
+  const verbose = await Bun.file(join(import.meta.dir, "../fixtures/openai-verbose.json")).text();
   let auth: string | undefined, url = "";
   const f: Fetcher = async (u, init) => (url = u, auth = (init?.headers as Record<string, string>).Authorization, new Response(verbose));
   const p = resolveProvider({ name: "g", type: "openai-compatible", url: "http://own/v1", model: "m", keyFile: join(dir, "tok") });

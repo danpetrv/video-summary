@@ -227,7 +227,10 @@ export function setValue(cfg: Config, key: string, value: unknown): Config {
   // `cfg` is already clean, so any warning comes from the new value: refuse it rather than drop it silently.
   const warnings: string[] = [];
   const parsed = parseConfig(next, warnings);
-  if (warnings.length) throw new UserError(`config: ${key}: ${warnings.join("; ")}`);
+  if (warnings.length) {
+    const reasons = warnings.map((w) => w.replace(/ — (ignored|skipped)$/, ""));
+    throw new UserError(`config: ${key}: not saved: ${reasons.join("; ")}`);
+  }
   return parsed;
 }
 

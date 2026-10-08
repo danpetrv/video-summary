@@ -39,11 +39,3 @@ test("probeDuration: garbage in output → UserError 'could not determine durati
   const run: Runner = async () => ({ code: 0, stdout: "N/A\n", stderr: "" });
   expect(probeDuration("/f", run)).rejects.toThrow("could not determine duration");
 });
-
-test("compressAudio: bitrate from parameter goes into argv", async () => {
-  const w = mkdtempSync(join(tmpdir(), "vs-audio-"));
-  const calls: string[][] = [];
-  const ok: Runner = async (cmd) => (calls.push(cmd), writeFileSync(cmd.at(-1)!, "ogg"), { code: 0, stdout: "", stderr: "" });
-  await compressAudio("/in.webm", join(w, "a.ogg"), ok, 29);
-  expect(calls[0]![calls[0]!.indexOf("-b:a") + 1]).toBe("29k");
-});

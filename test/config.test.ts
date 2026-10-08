@@ -240,7 +240,7 @@ test("saveConfig after migration writes the cleaned config", async () => {
 
 test("setValue: a value with removed settings is rejected, nothing silently dropped", () => {
   expect(() => setValue(DEFAULT_CONFIG, "providers", [{ name: "groq", type: "openai-compatible", preset: "groq" }]))
-    .toThrow('config: providers: providers[0] "groq": cloud providers were removed in v0.4.0 — skipped');
+    .toThrow(/^config: providers: not saved: providers\[0\] "groq": cloud providers were removed in v0\.4\.0$/);
   expect(() => setValue(DEFAULT_CONFIG, "providers", [{ name: "wx", type: "whisperx", url: "https://a", maxBytes: 5 }]))
-    .toThrow("config: providers: providers[0].maxBytes: removed in v0.4.0 — ignored");
+    .toThrow(/^config: providers: not saved: providers\[0\]\.maxBytes: removed in v0\.4\.0$/);
 });

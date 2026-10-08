@@ -6,7 +6,7 @@ import { resolveProvider } from "../../src/asr/presets";
 import { type Fetcher, UserError } from "../../src/types";
 
 const fx = (n: string) => Bun.file(join(import.meta.dir, "../fixtures", n)).json();
-const verbose = await fx("groq-verbose.json");
+const verbose = await fx("openai-verbose.json");
 const audio = join(import.meta.dir, "../fixtures/sample.ru.srt");
 const srv = resolveProvider({ name: "srv", type: "openai-compatible", url: "https://asr.example/v1", model: "whisper-large-v3-turbo", keyEnv: "K" });
 const local = resolveProvider({ name: "loc", type: "openai-compatible", url: "http://127.0.0.1:8000/v1", model: "m" });
