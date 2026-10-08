@@ -78,7 +78,7 @@ const PARAKEET = {
 };
 const LIBVULKAN = {
   name: "libvulkan1", install: "sudo apt install libvulkan1", needsSudo: true,
-  note: "enables GPU recognition; run local install again afterwards",
+  note: "enables GPU recognition; run local install again afterwards", optional: true,
 };
 /** XDG dirs inside the test root; `exists` sees only files there (not the host's libvulkan). */
 function localEnv() {
@@ -100,6 +100,7 @@ test("check: local configured, not installed -> deps.missing has parakeet with t
   const { env, exists, paths } = localEnv();
   const before = (await call(["check"], { env, exists })) as any;
   expect(before.deps.missing).toEqual([PARAKEET]);
+  expect(before.deps.missing[0].optional).toBeUndefined(); // required, unlike libvulkan1
   expect(before.deps.ok).toBe(false);
   expect(before.ok).toBe(false);
   expect(before.providers).toEqual([{ name: "local", available: false, keyMissing: null }]);
@@ -111,12 +112,15 @@ test("check: local configured, not installed -> deps.missing has parakeet with t
   expect(after.providers).toEqual([{ name: "local", available: true, keyMissing: null }]);
 });
 
-test("check: linux, no libvulkan, nvidia-smi present -> deps.missing has libvulkan1 with needsSudo true", async () => {
+test("check: linux, no libvulkan, nvidia-smi present -> deps.missing has libvulkan1 (needsSudo, optional), ok stays true", async () => {
   writeFileSync(cfgFile, JSON.stringify({ providers: [{ name: "local", type: "local" }] }));
   const { env, exists, paths } = localEnv();
   installLocal(paths); // the CPU build is enough to count as installed; the GPU build needs the library
   const r = (await call(["check"], { env, exists, has: (b) => b === "nvidia-smi" })) as any;
   expect(r.deps.missing).toEqual([LIBVULKAN]);
+  // advisory: the CPU build works without it
+  expect(r.deps.ok).toBe(true);
+  expect(r.ok).toBe(true);
   expect(r.providers).toEqual([{ name: "local", available: true, keyMissing: null }]);
   // no such hint on macOS
   const mac = (await call(["check"], { env, exists, has: (b) => b === "nvidia-smi", platform: "darwin", arch: "arm64" })) as any;

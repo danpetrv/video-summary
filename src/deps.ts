@@ -6,7 +6,8 @@ export type DepsReport = {
   ok: boolean;
   platform: Platform;
   runtime: { name: "bun" | "node"; version: string };
-  missing: { name: DepName; install: string; needsSudo: boolean; note?: string }[];
+  /** `optional`: advisory (an improvement), does not make `ok` false. */
+  missing: { name: DepName; install: string; needsSudo: boolean; note?: string; optional?: boolean }[];
   stale: { name: "yt-dlp"; version: string; ageDays: number; upgrade: string; needsSudo: boolean; note?: string }[];
 };
 
@@ -122,17 +123,19 @@ export function buildReport(
       stale.push({ name: "yt-dlp", version: yt.version, ageDays: age, upgrade: ytdlpUpgrade(mgr), ...pipxHint });
     }
   }
-  return { ok: missing.length === 0, platform, runtime, missing, stale };
+  return { ok: depsOk(missing), platform, runtime, missing, stale };
 }
 
-/** Missing pieces of a configured local provider, from `localStatus`. */
+export const depsOk = (missing: DepsReport["missing"]): boolean => missing.every((m) => m.optional);
+
+/** Missing pieces of a configured local provider, from `localStatus`. libvulkan1 is advisory: the CPU build works without it. */
 export function localMissing(s: { installed: boolean; hint?: string }): DepsReport["missing"] {
   const out: DepsReport["missing"] = [];
   if (!s.installed) {
     out.push({ name: "parakeet", install: "sh <skill-dir>/scripts/video-summary local install", needsSudo: false, note: "~0.9 GB download" });
   }
   if (s.hint) {
-    out.push({ name: "libvulkan1", install: "sudo apt install libvulkan1", needsSudo: true, note: "enables GPU recognition; run local install again afterwards" });
+    out.push({ name: "libvulkan1", install: "sudo apt install libvulkan1", needsSudo: true, note: "enables GPU recognition; run local install again afterwards", optional: true });
   }
   return out;
 }

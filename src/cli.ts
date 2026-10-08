@@ -1,6 +1,6 @@
 import { stat } from "node:fs/promises";
 import { type Config, DEFAULT_CONFIG, configPath, loadConfig, saveConfig, setValue } from "./config";
-import { type DepsReport, buildReport, localMissing, probeDeps } from "./deps";
+import { type DepsReport, buildReport, depsOk, localMissing, probeDeps } from "./deps";
 import { fetchCmd } from "./fetch-cmd";
 import { localInstall, localStatus } from "./local/install";
 import { resolveInputPath } from "./paths";
@@ -46,7 +46,7 @@ async function check(d: CliDeps, path: string): Promise<unknown> {
   const local = resolved.some((p) => p.type === "local") ? localStatus(d) : undefined;
   if (local) {
     depsReport.missing.push(...localMissing(local));
-    depsReport.ok = depsReport.missing.length === 0;
+    depsReport.ok = depsOk(depsReport.missing);
   }
   const providers = (await probeProviders(resolved, d.fetch, d.env, d.home, local)).map((c) => ({
     name: c.provider.name, available: c.available, keyMissing: c.keyMissing,
