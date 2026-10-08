@@ -96,7 +96,9 @@ async function recognize(
   for (;;) {
     tried.add(provider.name);
     try {
-      return { asr: await transcribeWith(provider, ogg, { language, diarize: flags.diarize }, d.fetch, d.env, d.home), failed };
+      const asr = await transcribeWith(provider, ogg, { language, diarize: flags.diarize }, d);
+      // Non-fatal problems of the provider that succeeded (GPU failed, CPU used) are reported alongside.
+      return { asr, failed: [...failed, ...(asr.notes ?? [])] };
     } catch (e) {
       failed.push((e as Error).message);
     }

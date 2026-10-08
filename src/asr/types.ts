@@ -2,7 +2,11 @@ import { netErrorTag } from "../net";
 import { type Cue, type Fetcher, UserError } from "../types";
 
 export type AsrOptions = { language: string | null; diarize: boolean };
-export type AsrResult = { cues: Cue[]; provider: string; diarized: boolean; speakers: number; language: string | null };
+export type AsrResult = {
+  cues: Cue[]; provider: string; diarized: boolean; speakers: number; language: string | null;
+  device?: "gpu" | "cpu"; // local engine: where recognition actually ran
+  notes?: string[]; // non-fatal problems worth reporting (e.g. GPU failed, CPU used)
+};
 
 /** Primary language subtag, lower-case: "pt-BR" -> "pt". */
 export const primaryLang = (l: string | null): string | null => (l ? (l.split(/[-_]/)[0]!.toLowerCase() || null) : null);

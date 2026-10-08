@@ -252,6 +252,23 @@ test("status: installed", async () => {
   });
 });
 
+test("status: vulkan lib present but the vulkan build missing -> installed (the CPU build runs)", async () => {
+  await localInstall(deps(), fixturePins()); // before libvulkan1: CPU build only
+  const s = localStatus(deps({ vulkan: true }), fixturePins());
+  expect([s.installed, s.builds, s.vulkan_lib]).toEqual([true, ["linux-cpu-x64"], true]);
+  // the CPU-capable build is what counts: without it a GPU build alone is not enough
+  rmSync(paths().binDir("linux-cpu-x64"), { recursive: true });
+  await localInstall(deps({ vulkan: true }), fixturePins());
+  rmSync(paths().binDir("linux-cpu-x64"), { recursive: true });
+  expect(localStatus(deps({ vulkan: true }), fixturePins()).installed).toBe(false);
+});
+
+test("status: darwin arm64 -> the Metal build is the CPU-capable one", async () => {
+  const d = deps({ platform: "darwin", arch: "arm64" });
+  await localInstall(d, fixturePins());
+  expect(localStatus(d, fixturePins()).installed).toBe(true);
+});
+
 test("status: model of the wrong size -> present, not verified, not installed", async () => {
   const d = deps();
   await localInstall(d, fixturePins());

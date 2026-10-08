@@ -16,6 +16,7 @@ const autoVtt = await Bun.file(join(FX, "auto.en.vtt")).text();
 const srt = await Bun.file(join(FX, "sample.ru.srt")).text();
 const wxJson = await Bun.file(join(FX, "whisperx-diarized.json")).json();
 const verboseJson = await Bun.file(join(FX, "groq-verbose.json")).json();
+const parakeetJson = await Bun.file(join(FX, "parakeet-words.json")).text();
 const root = mkdtempSync(join(tmpdir(), "vs-fetch-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
@@ -134,20 +135,70 @@ test("local provider not installed -> skipped before any download with the `loca
   expect(hasFormatDownload()).toBe(false);
 });
 
-test("local provider installed -> available to fetch (install status comes from the machine)", async () => {
+/**
+ * Fetch deps on a machine where the local engine is installed (CPU build, plus the Vulkan
+ * build and library when `gpu`); `cli` answers parakeet-cli runs by binary path.
+ */
+function localDeps(env: Env, o: { gpu?: boolean; cli?: (bin: string) => { code: number; stdout: string; stderr: string } } = {}): FetchDeps {
   const dir = mkdtempSync(join(root, "local-"));
-  const env = { XDG_DATA_HOME: join(dir, "data"), XDG_CACHE_HOME: join(dir, "cache") };
-  const paths = localPaths(env, root);
-  mkdirSync(paths.binDir("linux-cpu-x64"), { recursive: true });
-  writeFileSync(paths.cli("linux-cpu-x64"), "");
+  const xdg = { XDG_DATA_HOME: join(dir, "data"), XDG_CACHE_HOME: join(dir, "cache") };
+  const paths = localPaths(xdg, root);
+  for (const b of o.gpu ? ["linux-vulkan-x64", "linux-cpu-x64"] as const : ["linux-cpu-x64"] as const) {
+    mkdirSync(paths.binDir(b), { recursive: true });
+    writeFileSync(paths.cli(b), "");
+  }
   mkdirSync(join(paths.model, ".."), { recursive: true });
   writeFileSync(paths.model, "");
   truncateSync(paths.model, MODEL.size); // sparse
-  const d = { ...deps({ meta: noMeta, providers: [LOCAL, WX] }), env, exists: (p: string) => p.startsWith(dir) && existsSync(p) };
+  const d = deps(env);
+  const run: Runner = async (cmd, opts) => {
+    if (!cmd[0]!.endsWith("/parakeet-cli")) return d.run(cmd, opts);
+    calls.cmds.push(cmd);
+    return (o.cli ?? (() => ({ code: 0, stdout: parakeetJson, stderr: "" })))(cmd[0]!);
+  };
+  const vulkanLib = "/usr/lib/x86_64-linux-gnu/libvulkan.so.1";
+  return { ...d, run, env: xdg, exists: (p: string) => (p === vulkanLib ? !!o.gpu : p.startsWith(dir) && existsSync(p)) };
+}
+
+test("local provider end to end: fetch with [local] -> source asr, asr_provider local, transcript from the words", async () => {
+  const r = await fetchCmd(URL1, flags, localDeps({ meta: noMeta, providers: [LOCAL] }));
+  expect([r.source, r.asr_provider, r.diarized, r.speakers, r.asr_failed]).toEqual(["asr", "local", false, 0, undefined]);
+  const tr = await Bun.file(r.transcript_path).text();
+  expect(tr).toContain("Погнали, привет.");
+  expect(tr).toContain("что думает чат?");
+  expect(calls.urls).toEqual([]);
+  expect((await readMeta(r.dir))!.asr_provider).toBe("local");
+  expect(existsSync(join(r.dir, ".work"))).toBe(false);
+});
+
+test("local GPU fallback note appears in asr_failed", async () => {
+  const d = localDeps({ meta: noMeta, providers: [LOCAL] }, {
+    gpu: true,
+    cli: (bin) => bin.includes("vulkan")
+      ? { code: 1, stdout: "", stderr: "ggml_vulkan: Found 1 Vulkan devices\nerror: vk::Device::createBuffer: ErrorOutOfDeviceMemory\n" }
+      : { code: 0, stdout: parakeetJson, stderr: "" },
+  });
   const r = await fetchCmd(URL1, flags, d);
-  // local is chosen first; until local recognition exists it fails over to whisperx
+  expect(r.asr_provider).toBe("local");
+  expect(r.asr_failed).toEqual(["local: GPU run failed (error: vk::Device::createBuffer: ErrorOutOfDeviceMemory), used CPU"]);
+});
+
+test("local no speech -> next provider (whisperx) is used, asr_failed names local", async () => {
+  const empty = JSON.stringify({ text: "", frame_sec: 0.08, words: [], tokens: [] });
+  const d = localDeps({ meta: noMeta, providers: [LOCAL, WX] }, { cli: () => ({ code: 0, stdout: empty, stderr: "" }) });
+  const r = await fetchCmd(URL1, flags, d);
   expect(r.asr_provider).toBe("wx");
-  expect(r.asr_failed).toEqual(["local recognition is not implemented yet"]);
+  expect(r.asr_failed).toEqual(["local: no speech recognized"]);
+});
+
+test("local provider and a video in an unsupported language -> the next provider, before any download", async () => {
+  const r = await fetchCmd(URL1, flags, localDeps({ meta: { ...noMeta, language: "ja" }, providers: [LOCAL, WX] }));
+  expect([r.asr_provider, r.asr_failed]).toEqual(["wx", undefined]);
+  expect(calls.cmds.some((c) => c[0]!.endsWith("/parakeet-cli"))).toBe(false);
+  const err = await fetchCmd(URL1, { ...flags, force: true }, localDeps({ meta: { ...noMeta, language: "ja" }, providers: [LOCAL] }))
+    .catch((e) => e);
+  expect(err).toBeInstanceOf(UserError);
+  expect(err.message).toBe("no ASR provider fits: local: language ja not supported");
 });
 
 test("local file via ~ with sidecar .srt -> sidecar-subs, no ASR", async () => {

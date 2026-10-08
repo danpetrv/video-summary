@@ -1,15 +1,21 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { resolveProvider, type ResolvedProvider } from "../../src/asr/presets";
-import { type Candidate, chooseProvider, probeProviders, type SelectInput, transcribeWith } from "../../src/asr/select";
-import { type Fetcher, UserError } from "../../src/types";
+import { type AsrDeps, type Candidate, chooseProvider, probeProviders, type SelectInput, transcribeWith } from "../../src/asr/select";
+import { localPaths } from "../../src/local/paths";
+import type { Fetcher, Runner } from "../../src/types";
 
 const own = resolveProvider({ name: "own", type: "openai-compatible", url: "http://own/v1", model: "m", keyEnv: "OWN_KEY" });
 const wx = resolveProvider({ name: "wx", type: "whisperx", url: "https://wx" });
 const loc = resolveProvider({ name: "local", type: "local", engine: "parakeet", model: "ultra", device: "auto" });
 const ok = (p: ResolvedProvider): Candidate => ({ provider: p, available: true, keyMissing: null });
+const asrDeps = (fetch: Fetcher, home: string): AsrDeps => ({
+  fetch, env: {}, home, platform: "linux", arch: "x64", exists: () => false,
+  run: async (cmd) => { throw new Error(`unexpected command ${cmd.join(" ")}`); },
+});
 const base: Omit<SelectInput, "candidates"> = { durationSec: 5400, language: null, acceptSlow: false, estimate: () => null };
 
 test("chooseProvider: first fitting in order", () => {
@@ -39,11 +45,36 @@ test("probeProviders: local availability comes from the install status, no netwo
   expect((await probeProviders([loc], f, {}, "/nohome"))[0]!.available).toBe(false);
 });
 
-test("transcribeWith: local -> UserError (recognition lands in a later change)", async () => {
-  const f: Fetcher = async (u) => { throw new Error(`unexpected ${u}`); };
-  const err = await transcribeWith(loc, "/nonexistent.ogg", { language: null, diarize: false }, f, {}, "/nohome").catch((e) => e);
-  expect(err).toBeInstanceOf(UserError);
-  expect(err.message).toBe("local recognition is not implemented yet");
+test("chooseProvider: local skipped for a known unsupported language (ja); allowed for ru-RU and for null", () => {
+  expect(chooseProvider({ ...base, language: "ja", candidates: [ok(loc)] }))
+    .toEqual({ error: "no ASR provider fits: local: language ja not supported" });
+  expect(chooseProvider({ ...base, language: "ja", candidates: [ok(loc), ok(wx)] })).toEqual({ provider: wx });
+  expect(chooseProvider({ ...base, language: "ru-RU", candidates: [ok(loc), ok(wx)] })).toEqual({ provider: loc });
+  expect(chooseProvider({ ...base, language: null, candidates: [ok(loc), ok(wx)] })).toEqual({ provider: loc });
+  // remote providers have no language list
+  expect(chooseProvider({ ...base, language: "ja", candidates: [ok(wx)] })).toEqual({ provider: wx });
+});
+
+test("transcribeWith: local -> parakeet-cli on the installed build; language comes from the options", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "t6-"));
+  const env = { XDG_DATA_HOME: join(dir, "data"), XDG_CACHE_HOME: join(dir, "cache") };
+  const cli = localPaths(env, dir).cli("linux-cpu-x64");
+  await mkdir(dirname(cli), { recursive: true });
+  await writeFile(cli, "");
+  const words = await Bun.file(join(import.meta.dir, "../fixtures/parakeet-words.json")).text();
+  const ran: string[] = [];
+  const run: Runner = async (cmd) => {
+    ran.push(cmd[0]!);
+    if (cmd[0] === "ffmpeg") return { code: 0, stdout: "", stderr: "" };
+    return { code: 0, stdout: words, stderr: "" };
+  };
+  const f: Fetcher = async (u) => { throw new Error(`local must not use the network: ${u}`); };
+  const d = { ...asrDeps(f, dir), env, run, exists: existsSync };
+  const r = await transcribeWith(loc, join(dir, "audio.ogg"), { language: "ru", diarize: true }, d);
+  expect(ran).toEqual(["ffmpeg", cli]);
+  expect([r.provider, r.language, r.diarized, r.device, r.cues[0]!.text]).toEqual(["local", "ru", false, "cpu", "Погнали, привет."]);
+  const r2 = await transcribeWith(loc, join(dir, "audio.ogg"), { language: null, diarize: false }, d);
+  expect(r2.language).toBeNull();
 });
 
 test("chooseProvider: empty list", () => {
@@ -76,11 +107,11 @@ test("transcribeWith: reads key file, dispatches by type; no key -> no Authoriza
   let auth: string | undefined, url = "";
   const f: Fetcher = async (u, init) => (url = u, auth = (init?.headers as Record<string, string>).Authorization, new Response(verbose));
   const p = resolveProvider({ name: "g", type: "openai-compatible", url: "http://own/v1", model: "m", keyFile: join(dir, "tok") });
-  const r = await transcribeWith(p, audio, { language: null, diarize: false }, f, {}, dir);
+  const r = await transcribeWith(p, audio, { language: null, diarize: false }, asrDeps(f, dir));
   expect(auth).toBe("Bearer secret-token");
   expect(url).toBe("http://own/v1/audio/transcriptions");
   expect(r.provider).toBe("g");
-  await transcribeWith(own, audio, { language: null, diarize: false }, f, {}, dir);
+  await transcribeWith(own, audio, { language: null, diarize: false }, asrDeps(f, dir));
   expect(auth).toBeUndefined();
 });
 
@@ -89,7 +120,7 @@ test("transcribeWith: whisperx dispatch -> /asr with Speaker labels", async () =
   const body = await Bun.file(join(import.meta.dir, "../fixtures/whisperx-diarized.json")).text();
   let url = "";
   const f: Fetcher = async (u) => (url = u, new Response(body));
-  const r = await transcribeWith(wx, audio, { language: null, diarize: true }, f, {}, "/nohome");
+  const r = await transcribeWith(wx, audio, { language: null, diarize: true }, asrDeps(f, "/nohome"));
   expect(new URL(url).pathname).toBe("/asr");
   expect(r.cues[0]!.speaker).toBe("Speaker 1");
   expect(r.provider).toBe("wx");

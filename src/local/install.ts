@@ -31,16 +31,20 @@ function plannedBuilds(d: LocalDeps, vulkanLib: boolean): BuildId[] {
   return [p.gpu, p.cpu].filter((b): b is BuildId => b !== null);
 }
 
-/** No network, no hashing: the model counts as verified when it has the exact pinned size. */
+/**
+ * No network, no hashing: the model counts as verified when it has the exact pinned size.
+ * Installed = verified model + the build that can run on CPU (darwin arm64: the Metal build).
+ * A planned GPU build that is missing (libvulkan1 added after `local install`) only means CPU runs.
+ */
 export function localStatus(d: LocalDeps, pins: Pins = DEFAULT_PINS): LocalStatus {
   const paths = localPaths(d.env, d.home);
   const vulkanLib = findVulkanLib(d.exists);
-  const planned = plannedBuilds(d, vulkanLib);
-  const builds = planned.filter((b) => d.exists(paths.cli(b)));
+  const builds = plannedBuilds(d, vulkanLib).filter((b) => d.exists(paths.cli(b)));
+  const cpuBuild = planBuilds({ platform: d.platform, arch: d.arch, vulkanLib, device: "cpu" }).cpu!;
   const present = d.exists(paths.model);
   const verified = present && sizeOf(paths.model) === pins.MODEL.size;
   const out: LocalStatus = {
-    installed: builds.length === planned.length && verified,
+    installed: d.exists(paths.cli(cpuBuild)) && verified,
     version: PARAKEET_VERSION, builds, model: { present, verified, path: paths.model }, vulkan_lib: vulkanLib,
   };
   // An NVIDIA GPU without the Vulkan loader: installing it lets the next `local install` add the GPU build.

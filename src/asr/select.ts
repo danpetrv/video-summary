@@ -1,8 +1,10 @@
 import { readKey } from "../config";
-import { type Fetcher, UserError } from "../types";
+import { transcribeParakeet } from "../local/parakeet";
+import { LANGUAGES } from "../local/pins";
+import { type Fetcher, type Platform, type Runner, UserError } from "../types";
 import { modelsReachable, transcribeOpenAI } from "./openai-compatible";
 import type { ResolvedProvider } from "./presets";
-import type { AsrOptions, AsrResult } from "./types";
+import { type AsrOptions, type AsrResult, primaryLang } from "./types";
 import { transcribeWhisperx, whisperxHealthy } from "./whisperx";
 
 export type Candidate = { provider: ResolvedProvider; available: boolean; keyMissing: string | null };
@@ -38,7 +40,10 @@ export type SelectInput = {
   estimate: (p: ResolvedProvider, durationSec: number) => SlowEstimate | null;
 };
 
-function reject(c: Candidate): string | null {
+function reject(c: Candidate, language: string | null): string | null {
+  // Checked first: installing the engine would not help.
+  const lang = primaryLang(language);
+  if (c.provider.type === "local" && lang && !LANGUAGES.includes(lang)) return `language ${lang} not supported`;
   if (!c.available) return c.provider.type === "local" ? "local engine not installed — run `local install`" : "not reachable";
   if (c.keyMissing) return `no API key (${c.keyMissing})`;
   return null;
@@ -48,19 +53,21 @@ export function chooseProvider(i: SelectInput): { provider: ResolvedProvider } |
   if (i.candidates.length === 0) return { error: "no ASR providers configured — run setup (see references/setup.md)" };
   const reasons: string[] = [];
   for (const c of i.candidates) {
-    const why = reject(c);
+    const why = reject(c, i.language);
     if (why === null) return { provider: c.provider };
     reasons.push(`${c.provider.name}: ${why}`);
   }
   return { error: `no ASR provider fits: ${reasons.join("; ")}` };
 }
 
-export async function transcribeWith(
-  p: ResolvedProvider, file: string, o: AsrOptions, f: Fetcher,
-  env: Record<string, string | undefined>, home: string,
-): Promise<AsrResult> {
-  // Placeholder until local recognition lands; a UserError, so fetch fails over to the next provider.
-  if (p.type === "local") throw new UserError("local recognition is not implemented yet");
-  const key = await readKey(p, env, home);
-  return p.type === "whisperx" ? transcribeWhisperx(file, o, p, key, f) : transcribeOpenAI(file, o, p, key, f);
+/** What recognition needs: HTTP for servers; processes, paths and the platform for the local engine. */
+export type AsrDeps = {
+  fetch: Fetcher; env: Record<string, string | undefined>; home: string;
+  run: Runner; platform: Platform; arch: "x64" | "arm64"; exists: (p: string) => boolean;
+};
+
+export async function transcribeWith(p: ResolvedProvider, file: string, o: AsrOptions, d: AsrDeps): Promise<AsrResult> {
+  if (p.type === "local") return { ...(await transcribeParakeet(file, p, d)), language: o.language };
+  const key = await readKey(p, d.env, d.home);
+  return p.type === "whisperx" ? transcribeWhisperx(file, o, p, key, d.fetch) : transcribeOpenAI(file, o, p, key, d.fetch);
 }
