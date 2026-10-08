@@ -14,9 +14,12 @@ local engine crashing), the next one that fits is tried. `fetch` lists the faile
 | `openai-compatible` | own OpenAI-compatible server | no | optional |
 
 Cloud providers (the `groq` and `openai` presets) were removed in v0.4.0. An old config
-still loads: such providers are skipped and removed settings (`bitrate`, `tier`,
-`maxBytes`, `maxSeconds`, `local`) are ignored, each with a line in `check`'s
-`config.warnings`. Any `config set` saves the cleaned config.
+still loads: such providers (any provider with `preset`) are skipped and removed settings
+(`bitrate`, `tier`, `maxBytes`, `maxSeconds`, `local`, and `diarize` on
+`openai-compatible`) are ignored, each with a line in `check`'s `config.warnings`. A
+provider that v0.3 did not count as local (`openai-compatible` without `"local": true`,
+or `"local": false`) now gets local files without asking; its warning says
+`now treated as your own server`. Any `config set` saves the cleaned config.
 
 ## local
 

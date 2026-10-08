@@ -49,8 +49,14 @@ Rules that always apply:
   Groq/OpenAI, `bitrate`, `tier`, ...); they are ignored, the rest works. Show the warnings
   and offer to clean the config: any `config set` saves the cleaned config (e.g. read
   `config get summaryLength` and set the same value back). If no provider is left, or a
-  removed cloud provider was a fallback, offer the local provider in its place
-  (`references/setup.md`, speech recognition).
+  removed cloud provider was a fallback, offer to add the local provider
+  (`references/setup.md`, speech recognition). Add it, never replace the list: read
+  `config get providers`, keep every provider still there in its order, append
+  `{"name":"local","type":"local"}` (skip if a `local` provider is already there) and
+  `config set providers` with the result. Never drop a `whisperx` or `openai-compatible`
+  provider. A warning `... now treated as your own server — local files are sent to it
+  without asking` names a provider that v0.3 kept away from local files: tell the user;
+  remove it only if they say it is not their server.
 - `config.exists: false`: read `references/setup.md` and walk the user through the
   setup, then `check` again.
 - `config.exists: true, valid: false`: the config is broken. Show the user

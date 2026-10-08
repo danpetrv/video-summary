@@ -22,8 +22,11 @@ Launcher: `sh <skill-dir>/scripts/video-summary`. Config file: `config path`.
       `providers.md`) and gives no speaker labels; it runs on the GPU (Metal on Apple
       Silicon, Vulkan on Linux) or on the CPU, where a long video takes a while. On "yes"
       run `local install` (in the background: on a slow connection the download can
-      outlast the 10-minute Bash limit; a re-run skips what is already in place), then
-      `config set providers '[{"name":"local","type":"local"}]'`.
+      outlast the 10-minute Bash limit; a re-run skips what is already in place), then,
+      with no other providers, `config set providers '[{"name":"local","type":"local"}]'`.
+      With providers already in the config, append to them: read `config get providers`
+      and set the same list with `{"name":"local","type":"local"}` added at the end
+      (example below); never drop an existing provider.
       On Linux, if `nvidia-smi` exists but `local status` shows `vulkan_lib: false` (it
       then carries a `hint`), the GPU is not used: suggest that the user runs
       `! sudo apt install libvulkan1`, then run `local install` again (it adds the Vulkan
@@ -34,7 +37,7 @@ Launcher: `sh <skill-dir>/scripts/video-summary`. Config file: `config path`.
       (`type: openai-compatible`: `name`, `url` ending in `/v1`, `model`, optional key).
       It can go before or after the local provider: with the server first, local
       recognition is the fallback when the server is down. See `providers.md`.
-   3. **Only on Linux with both `nvidia-smi` and `docker`** (`command -v nvidia-smi docker`):
+   3. **Only on Linux with both `nvidia-smi` and `docker`** (`command -v nvidia-smi && command -v docker`):
       mention [whisperx-asr-service](https://github.com/murtaza-nasir/whisperx-asr-service)
       as an option with speaker labels. The user installs it themselves; you only give the
       link, and add it as a `whisperx` provider once it runs.
@@ -76,7 +79,10 @@ sh <skill-dir>/scripts/video-summary config set summaryLanguage '"auto"'
 sh <skill-dir>/scripts/video-summary config set summaryLength '"medium"'
 sh <skill-dir>/scripts/video-summary config set subtitles '"manual"'
 sh <skill-dir>/scripts/video-summary local install        # ~0.9 GB, once
-sh <skill-dir>/scripts/video-summary config set providers '[{"name":"local","type":"local"}]'
+sh <skill-dir>/scripts/video-summary config set providers '[{"name":"local","type":"local"}]'   # no other providers
+# providers already configured: keep them in order and append local, e.g. after `config get providers`
+# returned [{"name":"home-whisperx","type":"whisperx","url":"https://asr.example"}]:
+sh <skill-dir>/scripts/video-summary config set providers '[{"name":"home-whisperx","type":"whisperx","url":"https://asr.example"},{"name":"local","type":"local"}]'
 sh <skill-dir>/scripts/video-summary config set readeck '{"url":"https://read.example","keyFile":"~/.config/video-summary/readeck.key"}'
 ```
 

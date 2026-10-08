@@ -87,7 +87,7 @@ overrides the whole path:
 }
 ```
 
-Here the own whisperx server is tried first and the local engine is the fallback. With
+Here your own whisperx server is tried first and the local engine is the fallback. With
 `"device": "cpu"` the local provider never uses the GPU.
 
 `subtitles: "manual+auto"` also uses YouTube auto captions before recognition.
