@@ -72,6 +72,7 @@ export function chooseProvider(i: SelectInput): { provider: ResolvedProvider } |
 export type AsrDeps = {
   fetch: Fetcher; env: Record<string, string | undefined>; home: string;
   run: Runner; platform: Platform; arch: "x64" | "arm64"; exists: (p: string) => boolean;
+  clock?: () => number;
 };
 
 export async function transcribeWith(p: ResolvedProvider, file: string, o: AsrOptions, d: AsrDeps): Promise<AsrResult> {

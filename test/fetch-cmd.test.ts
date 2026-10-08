@@ -235,28 +235,48 @@ test("unknown duration: the slow gate applies after compression, by the real dur
   expect(calls.cmds.some((c) => c[0]!.endsWith("/parakeet-cli"))).toBe(false);
 });
 
-test("after a local run speed.json is updated under the device that actually ran", async () => {
-  // each clock reading is 10 s after the previous one: 213 s of audio in 10 s -> 21.3x
-  const tick = () => { let t = 0; return () => (t += 10_000); };
-  const gpu = { ...localDeps({ meta: noMeta, providers: [LOCAL] }, { gpu: true }), clock: tick() };
+/**
+ * Local deps on a simulated clock: every ffmpeg run takes 7 s, a parakeet-cli run on the Vulkan
+ * build `gpuMs`, on the CPU build `cpuMs`; `cli` answers by binary path as in localDeps.
+ */
+function timedDeps(env: Env, o: { gpuMs: number; cpuMs: number; cli?: (bin: string) => { code: number; stdout: string; stderr: string } }) {
+  let now = 0;
+  const d = localDeps(env, {
+    gpu: true,
+    cli: (bin) => {
+      now += bin.includes("vulkan") ? o.gpuMs : o.cpuMs;
+      return (o.cli ?? (() => ({ code: 0, stdout: parakeetJson, stderr: "" })))(bin);
+    },
+  });
+  const run: Runner = async (cmd, opts) => {
+    if (cmd[0] === "ffmpeg") now += 7_000;
+    return d.run(cmd, opts);
+  };
+  return { ...d, run, clock: () => now };
+}
+
+test("after a local run speed.json is updated under the device that actually ran, timed by that run only", async () => {
+  // 213 s of audio in a 10 s GPU run -> 21.3x; the ffmpeg time does not count
+  const gpu = timedDeps({ meta: noMeta, providers: [LOCAL] }, { gpuMs: 10_000, cpuMs: 99_000 });
   await fetchCmd(URL1, flags, gpu);
   expect(speedsOf(gpu)).toEqual({ "parakeet:ultra:gpu": 21.3 });
 
-  // GPU fails, CPU recognizes -> the cpu key
-  const fallback = {
-    ...localDeps({ meta: noMeta, providers: [LOCAL] }, {
-      gpu: true,
-      cli: (bin) => bin.includes("vulkan") ? { code: 1, stdout: "", stderr: "boom" } : { code: 0, stdout: parakeetJson, stderr: "" },
-    }),
-    clock: tick(),
-  };
+  // GPU fails after 50 s, CPU recognizes in 20 s -> the cpu key gets 213 / 20, not 213 / 70
+  const fallback = timedDeps({ meta: noMeta, providers: [LOCAL] }, {
+    gpuMs: 50_000, cpuMs: 20_000,
+    cli: (bin) => bin.includes("vulkan") ? { code: 1, stdout: "", stderr: "boom" } : { code: 0, stdout: parakeetJson, stderr: "" },
+  });
   await fetchCmd(URL1, { ...flags, force: true }, fallback);
-  expect(speedsOf(fallback)).toEqual({ "parakeet:ultra:cpu": 21.3 });
+  expect(speedsOf(fallback)).toEqual({ "parakeet:ultra:cpu": 10.65 });
 
-  // a non-local provider records nothing
-  const wxOnly = localDeps({ meta: noMeta, providers: [WX] });
-  await fetchCmd(URL1, { ...flags, force: true }, wxOnly);
-  expect(speedsOf(wxOnly)).toBeNull();
+  // a failed local run records nothing; neither does the non-local provider that took over
+  const empty = JSON.stringify({ text: "", frame_sec: 0.08, words: [], tokens: [] });
+  const failed = timedDeps({ meta: noMeta, providers: [LOCAL, WX] }, {
+    gpuMs: 10_000, cpuMs: 10_000, cli: () => ({ code: 0, stdout: empty, stderr: "" }),
+  });
+  const r = await fetchCmd(URL1, { ...flags, force: true }, failed);
+  expect(r.asr_provider).toBe("wx");
+  expect(speedsOf(failed)).toBeNull();
 });
 
 test("local provider and a video in an unsupported language -> the next provider, before any download", async () => {

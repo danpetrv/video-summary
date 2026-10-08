@@ -5,6 +5,7 @@ export type AsrOptions = { language: string | null; diarize: boolean };
 export type AsrResult = {
   cues: Cue[]; provider: string; diarized: boolean; speakers: number; language: string | null;
   device?: "gpu" | "cpu"; // local engine: where recognition actually ran
+  elapsedMs?: number; // local engine: process time of the run that produced the result
   notes?: string[]; // non-fatal problems worth reporting (e.g. GPU failed, CPU used)
 };
 

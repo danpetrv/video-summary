@@ -81,7 +81,8 @@ test("wordsToCues: breaks after . ? ! …, on gaps >= 1.0 s, and before a cue wo
 
 test("transcribe: converts to 16 kHz mono wav, runs parakeet-cli transcribe --model <model> --input <wav> --vad --json --threads <min(cpus,8)> with timeoutMs 7200000", async () => {
   const m = machine({ builds: ["linux-cpu-x64"] });
-  const r = await transcribeParakeet(m.ogg, local(), m.d);
+  let t = 0;
+  const r = await transcribeParakeet(m.ogg, local(), { ...m.d, clock: () => (t += 1_000) });
   expect(LOCAL_TIMEOUT_MS).toBe(7_200_000);
   const wav = join(m.work, "audio.wav");
   expect(m.calls).toEqual([
@@ -96,6 +97,7 @@ test("transcribe: converts to 16 kHz mono wav, runs parakeet-cli transcribe --mo
   ]);
   expect(r).toEqual({
     cues: wordsToCues(JSON.parse(fixture).words), provider: "local", diarized: false, speakers: 0, language: null, device: "cpu",
+    elapsedMs: 1_000,
   });
   // the wav is a temporary file
   expect(existsSync(wav)).toBe(false);
@@ -225,4 +227,21 @@ test("plannedDevice: gpu only when the GPU build is installed and device is not 
   expect(plannedDevice(local(), machine({ builds: both }).d)).toBe("cpu");
   const mac = machine({ builds: ["macos-metal-arm64"], platform: "darwin", arch: "arm64" }).d;
   expect([plannedDevice(local(), mac), plannedDevice(local("cpu"), mac)]).toEqual(["gpu", "cpu"]);
+});
+
+test("transcribe: elapsedMs is the process time of the run that succeeded, not ffmpeg or a failed GPU run", async () => {
+  let now = 0;
+  const m = machine({
+    builds: ["linux-vulkan-x64", "linux-cpu-x64"], vulkanLib: true,
+    cli: (bin) => {
+      now += bin.includes("vulkan") ? 50_000 : 20_000;
+      return bin.includes("vulkan") ? { code: 1, stdout: "", stderr: "boom" } : { code: 0, stdout: fixture, stderr: "" };
+    },
+  });
+  const run: Runner = async (cmd, opts) => {
+    if (cmd[0] === "ffmpeg") now += 7_000;
+    return m.d.run(cmd, opts);
+  };
+  const r = await transcribeParakeet(m.ogg, local(), { ...m.d, run, clock: () => now });
+  expect([r.device, r.elapsedMs]).toEqual(["cpu", 20_000]);
 });

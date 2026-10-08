@@ -99,16 +99,14 @@ async function recognize(
   const durationSec = item.duration ?? (await probeDuration(ogg, d.run));
   provider ??= pick(durationSec);
 
-  const clock = d.clock ?? Date.now;
   const failed: string[] = [];
   const tried = new Set<string>();
   for (;;) {
     tried.add(provider.name);
     try {
-      const started = clock();
       const asr = await transcribeWith(provider, ogg, { language, diarize: flags.diarize }, d);
-      if (provider.type === "local" && asr.device) {
-        await noteSpeed(speedFile, speedKey(provider, asr.device), durationSec, clock() - started);
+      if (provider.type === "local" && asr.device && asr.elapsedMs !== undefined) {
+        await noteSpeed(speedFile, speedKey(provider, asr.device), durationSec, asr.elapsedMs);
       }
       // Non-fatal problems of the provider that succeeded (GPU failed, CPU used) are reported alongside.
       return { asr, failed: [...failed, ...(asr.notes ?? [])] };

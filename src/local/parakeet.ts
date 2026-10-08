@@ -22,6 +22,7 @@ export type Word = { w: string; start: number; end: number };
 export type ParakeetDeps = {
   run: Runner; env: Record<string, string | undefined>; home: string;
   platform: Platform; arch: "x64" | "arm64"; exists: (p: string) => boolean;
+  clock?: () => number; // ms; times the parakeet-cli run for the speed store (default Date.now)
 };
 
 /**
@@ -92,11 +93,16 @@ export async function transcribeParakeet(ogg: string, p: LocalProvider, d: Parak
   const wav = `${ogg.replace(/\.[^./]*$/, "")}.wav`;
   const threads = String(Math.min(availableParallelism(), 8));
 
-  const transcribe = (build: BuildId, env?: Record<string, string>) =>
-    d.run(
+  const clock = d.clock ?? Date.now;
+  // Each run is timed on its own: the speed store wants the process time of the run that succeeded.
+  const transcribe = async (build: BuildId, env?: Record<string, string>) => {
+    const started = clock();
+    const r = await d.run(
       [paths.cli(build), "transcribe", "--model", paths.model, "--input", wav, "--vad", "--json", "--threads", threads],
       env ? { timeoutMs: LOCAL_TIMEOUT_MS, env } : { timeoutMs: LOCAL_TIMEOUT_MS },
     );
+    return { ...r, elapsedMs: clock() - started };
+  };
   const timedOut = () => new UserError(`${p.name}: timed out after ${LOCAL_TIMEOUT_MS / 1000} s`);
 
   try {
@@ -110,7 +116,7 @@ export async function transcribeParakeet(ogg: string, p: LocalProvider, d: Parak
 
     const notes: string[] = [];
     let device: "gpu" | "cpu" = "cpu";
-    let r: RunResult | null = null;
+    let r: (RunResult & { elapsedMs: number }) | null = null;
     if (gpuBuild) {
       const g = await transcribe(gpuBuild);
       // Two more hours on CPU after a GPU timeout is not worth it.
@@ -130,7 +136,9 @@ export async function transcribeParakeet(ogg: string, p: LocalProvider, d: Parak
 
     const cues = wordsToCues(parseWords(p.name, r.stdout));
     if (cues.length === 0) throw new UserError(`${p.name}: no speech recognized`);
-    const out: AsrResult = { cues, provider: p.name, diarized: false, speakers: 0, language: null, device };
+    const out: AsrResult = {
+      cues, provider: p.name, diarized: false, speakers: 0, language: null, device, elapsedMs: r.elapsedMs,
+    };
     if (notes.length) out.notes = notes;
     return out;
   } finally {
