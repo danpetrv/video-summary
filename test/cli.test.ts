@@ -22,7 +22,8 @@ const okRun = async (cmd: string[]) => {
 const deps = (over: Partial<CliDeps> = {}): CliDeps => ({
   run: okRun, fetch: async () => { throw new Error("offline"); },
   env: { VIDEO_SUMMARY_CONFIG: cfgFile }, home: root, cwd: root, now: new Date("2026-10-02T00:00:00Z"),
-  platform: "linux", runtime: { name: "node", version: "24.0.0" }, has: () => false, ...over,
+  platform: "linux", arch: "x64", runtime: { name: "node", version: "24.0.0" }, has: () => false, exists: () => false,
+  ...over,
 });
 const call = (argv: string[], over: Partial<CliDeps> = {}) => main(argv, deps(over));
 
@@ -115,6 +116,39 @@ test("finalize <dir> -> {reading_minutes}", async () => {
   writeFileSync(join(dir, "summary.md"), "# T\n\n> 📖 ~{{reading_time}} min\n\n" + "w ".repeat(250));
   expect(await call(["finalize", dir])).toEqual({ reading_minutes: 2 });
   await expect(call(["finalize"])).rejects.toBeInstanceOf(UserError);
+});
+
+test("local status -> JSON status of the engine and model, no network", async () => {
+  const env = { VIDEO_SUMMARY_CONFIG: cfgFile, XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache") };
+  const r = await call(["local", "status"], {
+    env, has: (b) => b === "nvidia-smi",
+    fetch: async () => { throw new Error("status must not touch the network"); },
+  });
+  expect(r).toEqual({
+    installed: false, version: "v0.6.1", builds: [],
+    model: { present: false, verified: false, path: join(root, "cache", "video-summary", "models", "ultra-q8_0.gguf") },
+    vulkan_lib: false, hint: "sudo apt install libvulkan1",
+  });
+});
+
+test("local install dispatches to the installer (network error surfaces as UserError)", async () => {
+  const env = { VIDEO_SUMMARY_CONFIG: cfgFile, XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache") };
+  const urls: string[] = [];
+  const err = (await call(["local", "install"], {
+    env, arch: "arm64",
+    fetch: async (url) => { urls.push(url); throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } }); },
+  }).catch((e: Error) => e)) as Error;
+  expect(err).toBeInstanceOf(UserError);
+  expect(err.message).toBe("could not download parakeet-v0.6.1-bin-linux-cpu-arm64.tar.gz: ECONNREFUSED");
+  expect(urls).toEqual(["https://github.com/mudler/parakeet.cpp/releases/download/v0.6.1/parakeet-v0.6.1-bin-linux-cpu-arm64.tar.gz"]);
+});
+
+test("local without a known subcommand -> usage mentioning local install|status", async () => {
+  for (const argv of [["local"], ["local", "foo"]]) {
+    const err = (await call(argv).catch((e: Error) => e)) as Error;
+    expect(err).toBeInstanceOf(UserError);
+    expect(err.message).toMatch(/^usage:.*local install\|status/);
+  }
 });
 
 test("unknown command -> usage", async () => {

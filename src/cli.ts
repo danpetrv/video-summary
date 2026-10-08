@@ -2,6 +2,7 @@ import { stat } from "node:fs/promises";
 import { type Config, DEFAULT_CONFIG, configPath, loadConfig, saveConfig, setValue } from "./config";
 import { type DepsReport, buildReport, probeDeps } from "./deps";
 import { fetchCmd } from "./fetch-cmd";
+import { localInstall, localStatus } from "./local/install";
 import { resolveInputPath } from "./paths";
 import { resolveProvider } from "./asr/presets";
 import { probeProviders } from "./asr/select";
@@ -11,12 +12,13 @@ import { type Fetcher, type Platform, type Runner, UserError } from "./types";
 
 export type CliDeps = {
   run: Runner; fetch: Fetcher; env: Record<string, string | undefined>; home: string; cwd: string; now: Date;
-  platform: Platform; runtime: DepsReport["runtime"]; has: (bin: string) => boolean;
+  platform: Platform; arch: "x64" | "arm64"; runtime: DepsReport["runtime"];
+  has: (bin: string) => boolean; exists: (p: string) => boolean;
 };
 
 const USAGE =
   "usage: video-summary check | config path|get [key]|init [--force]|set <key> <json> | " +
-  "fetch <url|path> [--no-diarize] [--force] | finalize <dir> | readeck <dir>";
+  "fetch <url|path> [--no-diarize] [--force] | finalize <dir> | readeck <dir> | local install|status";
 const NO_CONFIG = "no config — run setup (see references/setup.md)";
 
 async function requireConfig(path: string): Promise<Config> {
@@ -118,6 +120,12 @@ export async function main(argv: string[], d: CliDeps): Promise<unknown> {
       if (!rest[0]) throw new UserError(USAGE);
       const cfg = await requireConfig(path);
       return sendToReadeck(resolveInputPath(rest[0], d.cwd, d.home), { readeck: cfg.readeck, fetch: d.fetch, env: d.env, home: d.home, run: d.run });
+    }
+    case "local": {
+      // No config needed: install/status depend only on the machine.
+      if (rest[0] === "install") return localInstall(d);
+      if (rest[0] === "status") return localStatus(d);
+      throw new UserError(USAGE);
     }
     default:
       throw new UserError(USAGE);
