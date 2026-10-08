@@ -4,7 +4,7 @@
 
 An [Agent Skills](https://agentskills.io) skill that turns a YouTube link, a video URL or a
 local audio/video file into a structured markdown summary. The CLI gets the text (manual
-subtitles, optionally auto captions, or speech recognition with speaker labels), your
+subtitles, optionally auto captions, or speech recognition right on your machine), your
 agent writes the summary, and it can optionally be pushed to [Readeck](https://readeck.org).
 
 ## Install
@@ -15,8 +15,10 @@ npx skills add danpetrv/video-summary
 ```
 
 Then ask your agent: `/video-summary https://youtu.be/...`. On the first run the agent
-walks you through the setup (output folder, providers, keys, language, summary size,
-Readeck).
+walks you through the setup (output folder, speech recognition, language, summary size,
+Readeck). For speech recognition it recommends the local engine: with your consent it
+downloads it once (about 0.9 GB: the Parakeet Ultra model and parakeet.cpp binaries). No
+account and no API key are needed.
 
 The summary size is an optional argument: `short` (TL;DR and key ideas), `medium` (the
 full template, default), `long` (in depth) or a target reading time such as `5m`
@@ -29,35 +31,42 @@ full template, default), `long` (in depth) or a target reading time such as `5m`
   for YouTube yt-dlp uses deno, node or bun as its JavaScript runtime (whichever is
   installed)
 - `bun` or Node.js >= 20 (the skill ships a prebuilt bundle, no `npm install`)
-- macOS or Linux
+- macOS (Apple Silicon; Intel Macs work on the CPU) or Linux (x64, arm64); on Windows, use
+  WSL2, which counts as Linux
+- for local recognition on a GPU under Linux: the Vulkan loader (`libvulkan1` on
+  Debian/Ubuntu) and a working GPU driver; without it recognition runs on the CPU
 
 The agent checks all of this (`check`) and offers to install what is missing.
 
-## Providers and limits
+## Speech recognition
 
-Providers are tried in the order of the config; the first suitable one is used. If it
-fails during recognition (server error, rate limit, network), the next suitable one is tried.
+Recognition is used when a video has no subtitles. Providers are tried in the order of the
+config; the first suitable one is used. If it fails during recognition (server error,
+network, the local engine crashing), the next suitable one is tried.
 
 | provider | notes |
 |---|---|
-| whisperx-asr-service | your own server, speaker labels, no limits |
-| Groq (`groq`) | `whisper-large-v3-turbo`; free tier: 25 MB and 7000 s per file |
-| OpenAI (`openai`) | `whisper-1`; 25 MB. With `diarize: true`: `gpt-4o-transcribe-diarize` (speaker labels), **experimental**: long recordings may be rejected by the API, limits not verified |
-| any OpenAI-compatible endpoint | speaches, faster-whisper-server, ... via `url` + `model` |
+| `local` (recommended) | Parakeet Ultra via [parakeet.cpp](https://github.com/mudler/parakeet.cpp) on this machine: no server, no key; GPU (Metal on Apple Silicon, Vulkan on Linux) or CPU; 25 European languages; no speaker labels |
+| `whisperx` | your own [whisperx-asr-service](https://github.com/murtaza-nasir/whisperx-asr-service) server, speaker labels |
+| `openai-compatible` | your own OpenAI-compatible server (speaches, faster-whisper-server, ...) via `url` + `model` |
 
-Audio is compressed to mono opus (16-32 kbps, adaptive to the smallest cloud file
-limit), so with Groq free the longest video is about 1 h 56 min (1 h 40 min with
-`bitrate: "fixed"`). Longer ones are refused with a clear message (no chunking).
-`config limits` prints the numbers for your config.
+The local engine knows bg, hr, cs, da, nl, en, et, fi, fr, de, el, hu, it, lv, lt, mt,
+pl, pt, ro, sk, sl, es, sv, ru and uk; a video in another language goes to the next
+provider in the list. Speed depends on the hardware: a desktop GPU recognizes an hour of
+audio in under a minute, a CPU takes several minutes or more. When a run would take more
+than 10 minutes, the agent tells you the estimate (based on the speed measured on your
+machine) and waits for your go.
+
+Cloud providers (the Groq and OpenAI presets) were removed in v0.4.0. An old config keeps
+working: cloud providers and removed settings (`bitrate`, `tier`, ...) are skipped with a
+warning, and the agent offers to clean the config.
 
 ## Privacy
 
-Subtitles are fetched directly from the site. Recognition sends the extracted audio to
-the first suitable provider in your list; a provider marked `local: true` stays on your
-network. whisperx defaults to `local: true`: if the whisperx server is not yours, set
-`"local": false` on it. A cloud provider receives a **local file** or a link to an unknown
-site only when you pass `--allow-cloud` (the agent asks you first). API keys live in key
-files or environment variables and are never stored in the config or printed.
+Subtitles are fetched directly from the site. Audio is recognized only on your machines:
+by the local engine, or by your own server if you configure one (the skill does not check
+where a server's `url` points). Keys for your own servers live in key files or environment
+variables and are never stored in the config or printed.
 
 ## Config
 
@@ -70,22 +79,25 @@ overrides the whole path:
   "summaryLanguage": "auto",
   "summaryLength": "medium",
   "subtitles": "manual",
-  "bitrate": "adaptive",
   "providers": [
     { "name": "home-whisperx", "type": "whisperx", "url": "https://asr.example" },
-    { "name": "groq", "type": "openai-compatible", "preset": "groq", "tier": "free",
-      "keyFile": "~/.config/video-summary/groq.key" },
-    { "name": "local", "type": "openai-compatible", "url": "http://localhost:8000/v1",
-      "model": "Systran/faster-whisper-large-v3", "local": true }
+    { "name": "local", "type": "local" }
   ],
   "readeck": { "url": "https://read.example", "keyFile": "~/.config/video-summary/readeck.key" }
 }
 ```
 
+Here the own whisperx server is tried first and the local engine is the fallback. With
+`"device": "cpu"` the local provider never uses the GPU.
+
 `subtitles: "manual+auto"` also uses YouTube auto captions before recognition.
 `readeck: null` disables the export (`config set readeck null`). A Readeck bookmark gets the
 video thumbnail as its picture; for a local file, the first non-black frame of the first
 minute (or the cover art of an audio file) is shown in the text instead.
+
+The local engine keeps its files in `${XDG_DATA_HOME:-~/.local/share}/video-summary/`
+(binaries), `${XDG_CACHE_HOME:-~/.cache}/video-summary/models/` (the model) and
+`${XDG_STATE_HOME:-~/.local/state}/video-summary/speed.json` (measured speed).
 
 ## Development
 
@@ -120,3 +132,10 @@ Users of `npx skills add danpetrv/video-summary` get `main`; a release can be pi
 ## License
 
 MIT
+
+The local engine is downloaded on first use, not shipped with the skill:
+
+- [parakeet.cpp](https://github.com/mudler/parakeet.cpp): MIT.
+- Model [Parakeet Ultra](https://huggingface.co/moondream/parakeet-ultra) (GGUF
+  conversion from [mudler/parakeet-cpp-gguf](https://huggingface.co/mudler/parakeet-cpp-gguf)):
+  CC-BY-4.0. Attribution: NVIDIA (Parakeet TDT 0.6B v3), fine-tuned by Moondream.

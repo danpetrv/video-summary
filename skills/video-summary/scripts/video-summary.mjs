@@ -1,8 +1,9 @@
 // src/main.ts
+import { existsSync as existsSync2 } from "node:fs";
 import { homedir } from "node:os";
 
 // src/cli.ts
-import { stat as stat3 } from "node:fs/promises";
+import { stat as stat4 } from "node:fs/promises";
 
 // src/config.ts
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -18,13 +19,13 @@ var DEFAULT_CONFIG = {
   summaryLanguage: "auto",
   summaryLength: "medium",
   subtitles: "manual",
-  bitrate: "adaptive",
   providers: [],
   readeck: null
 };
-var PRESETS = ["groq", "openai"];
 var SUMMARY_LENGTH = /^(short|medium|long|([1-9]|[1-5]\d|60)m)$/;
 var TOP_KEYS = Object.keys(DEFAULT_CONFIG);
+var REMOVED_PROVIDER_KEYS = ["tier", "maxBytes", "maxSeconds", "local"];
+var removed = (path) => `${path}: removed in v0.4.0 — ignored`;
 function configPath(env, home) {
   if (env.VIDEO_SUMMARY_CONFIG)
     return env.VIDEO_SUMMARY_CONFIG;
@@ -59,14 +60,6 @@ function optBool(o, k, path) {
     return fail(`${path}.${k}`, "must be true or false");
   return v;
 }
-function optLimit(o, k, path) {
-  const v = o[k];
-  if (v === undefined || v === null)
-    return v;
-  if (typeof v !== "number" || !Number.isFinite(v) || v <= 0)
-    return fail(`${path}.${k}`, "must be a positive number or null");
-  return v;
-}
 function keyRef(o, path) {
   const out = {};
   const f = optStr(o, "keyFile", path);
@@ -83,67 +76,78 @@ function checkKeys(o, allowed, path) {
       fail(path ? `${path}.${k}` : k, "unknown key");
   }
 }
-function parseProvider(raw, i, seen) {
-  const path = `providers[${i}]`;
-  if (!isObj(raw))
-    return fail(path, "must be an object");
-  checkKeys(raw, ["name", "type", "preset", "tier", "url", "model", "diarize", "local", "maxBytes", "maxSeconds", "keyFile", "keyEnv"], path);
+function providerName(raw, path, seen) {
   const name = str(raw.name, `${path}.name`);
   if (seen.has(name))
     fail(`${path}.name`, `duplicate "${name}"`);
   seen.add(name);
-  if (raw.type !== "whisperx" && raw.type !== "openai-compatible") {
-    return fail(`${path}.type`, `unknown type ${JSON.stringify(raw.type)} (whisperx, openai-compatible)`);
+  return name;
+}
+var LOCAL_KEYS = ["name", "type", "engine", "model", "device"];
+var REMOTE_KEYS = ["url", "diarize", "keyFile", "keyEnv", "preset", ...REMOVED_PROVIDER_KEYS];
+function oneOf(o, k, allowed, path) {
+  const v = o[k];
+  if (v === undefined)
+    return allowed[0];
+  if (!allowed.includes(v))
+    fail(`${path}.${k}`, `must be ${allowed.map((a) => JSON.stringify(a)).join(" or ")}`);
+  return v;
+}
+function parseLocal(raw, path, seen) {
+  for (const k of Object.keys(raw)) {
+    if (!LOCAL_KEYS.includes(k))
+      fail(`${path}.${k}`, REMOTE_KEYS.includes(k) ? "not allowed for type local" : "unknown key");
   }
-  const p = { name, type: raw.type, ...keyRef(raw, path) };
+  return {
+    name: providerName(raw, path, seen),
+    type: "local",
+    engine: oneOf(raw, "engine", ["parakeet"], path),
+    model: oneOf(raw, "model", ["ultra"], path),
+    device: oneOf(raw, "device", ["auto", "cpu"], path)
+  };
+}
+function parseProvider(raw, i, seen, warnings) {
+  const path = `providers[${i}]`;
+  if (!isObj(raw))
+    return fail(path, "must be an object");
+  if (raw.type === "local")
+    return parseLocal(raw, path, seen);
   if (raw.preset !== undefined) {
-    if (typeof raw.preset !== "string" || !PRESETS.includes(raw.preset)) {
-      fail(`${path}.preset`, `unknown preset ${JSON.stringify(raw.preset)} (${PRESETS.join(", ")})`);
-    }
-    if (raw.type !== "openai-compatible")
-      fail(`${path}.preset`, "only allowed for type openai-compatible");
-    p.preset = raw.preset;
+    const label = typeof raw.name === "string" && raw.name ? `${path} ${JSON.stringify(raw.name)}` : path;
+    warnings.push(`${label}: cloud providers were removed in v0.4.0 — skipped`);
+    return null;
   }
-  if (raw.tier !== undefined) {
-    if (raw.tier !== "free" && raw.tier !== "dev")
-      fail(`${path}.tier`, 'must be "free" or "dev"');
-    if (p.preset !== "groq")
-      fail(`${path}.tier`, 'only allowed with preset "groq"');
-    p.tier = raw.tier;
+  const legacy = raw.type === "openai-compatible" ? [...REMOVED_PROVIDER_KEYS, "diarize"] : REMOVED_PROVIDER_KEYS;
+  for (const k of legacy)
+    if (raw[k] !== undefined)
+      warnings.push(removed(`${path}.${k}`));
+  checkKeys(raw, ["name", "type", "url", "model", "diarize", "keyFile", "keyEnv", ...legacy], path);
+  const name = providerName(raw, path, seen);
+  if (raw.type !== "whisperx" && raw.type !== "openai-compatible") {
+    return fail(`${path}.type`, `unknown type ${JSON.stringify(raw.type)} (whisperx, openai-compatible, local)`);
   }
-  const url = optStr(raw, "url", path);
-  if (url !== undefined && url !== null) {
-    p.url = url.replace(/\/+$/, "");
-    if (!p.url)
-      fail(`${path}.url`, "required");
-  } else if (!p.preset)
-    fail(`${path}.url`, "required");
+  const url = optStr(raw, "url", path)?.replace(/\/+$/, "");
+  if (!url)
+    return fail(`${path}.url`, "required");
+  const p = { name, type: raw.type, url, ...keyRef(raw, path) };
   const model = optStr(raw, "model", path);
   if (model)
     p.model = model;
-  else if (p.type === "openai-compatible" && !p.preset)
-    fail(`${path}.model`, "required without preset");
-  const diarize = optBool(raw, "diarize", path);
-  if (diarize === true && p.type !== "whisperx" && p.preset !== "openai") {
-    fail(`${path}.diarize`, "speaker labels are only supported by whisperx and the openai preset");
+  else if (p.type === "openai-compatible")
+    fail(`${path}.model`, "required");
+  if (p.type === "whisperx") {
+    const diarize = optBool(raw, "diarize", path);
+    if (diarize !== undefined)
+      p.diarize = diarize;
   }
-  if (diarize !== undefined)
-    p.diarize = diarize;
-  const local = optBool(raw, "local", path);
-  if (local !== undefined)
-    p.local = local;
-  const mb = optLimit(raw, "maxBytes", path);
-  if (mb !== undefined)
-    p.maxBytes = mb;
-  const ms = optLimit(raw, "maxSeconds", path);
-  if (ms !== undefined)
-    p.maxSeconds = ms;
   return p;
 }
-function parseConfig(raw) {
+function parseConfig(raw, warnings = []) {
   if (!isObj(raw))
     return fail("(root)", "must be an object");
-  checkKeys(raw, TOP_KEYS, "");
+  if (raw.bitrate !== undefined)
+    warnings.push(removed("bitrate"));
+  checkKeys(raw, [...TOP_KEYS, "bitrate"], "");
   const cfg = { ...DEFAULT_CONFIG, providers: [], readeck: null };
   if (raw.outputDir !== undefined)
     cfg.outputDir = str(raw.outputDir, "outputDir");
@@ -160,16 +164,11 @@ function parseConfig(raw) {
       fail("subtitles", 'must be "manual" or "manual+auto"');
     cfg.subtitles = raw.subtitles;
   }
-  if (raw.bitrate !== undefined) {
-    if (raw.bitrate !== "adaptive" && raw.bitrate !== "fixed")
-      fail("bitrate", 'must be "adaptive" or "fixed"');
-    cfg.bitrate = raw.bitrate;
-  }
   if (raw.providers !== undefined) {
     if (!Array.isArray(raw.providers))
       return fail("providers", "must be an array");
     const seen = new Set;
-    cfg.providers = raw.providers.map((p, i) => parseProvider(p, i, seen));
+    cfg.providers = raw.providers.map((p, i) => parseProvider(p, i, seen, warnings)).filter((p) => p !== null);
   }
   if (raw.readeck !== undefined && raw.readeck !== null) {
     const r = raw.readeck;
@@ -188,7 +187,7 @@ function parseConfig(raw) {
   }
   return cfg;
 }
-async function loadConfig(path) {
+async function loadConfig(path, warnings) {
   let text;
   try {
     text = await readFile(path, "utf8");
@@ -203,7 +202,7 @@ async function loadConfig(path) {
   } catch (e) {
     throw new UserError(`config: ${path}: invalid JSON (${e.message})`);
   }
-  return parseConfig(raw);
+  return parseConfig(raw, warnings);
 }
 async function saveConfig(path, cfg) {
   await mkdir(dirname(path), { recursive: true });
@@ -226,7 +225,13 @@ function setValue(cfg, key, value) {
   } else {
     throw new UserError(`config: ${key}: unknown key`);
   }
-  return parseConfig(next);
+  const warnings = [];
+  const parsed = parseConfig(next, warnings);
+  if (warnings.length) {
+    const reasons = warnings.map((w) => w.replace(/ — (ignored|skipped)$/, ""));
+    throw new UserError(`config: ${key}: not saved: ${reasons.join("; ")}`);
+  }
+  return parsed;
 }
 function keySource(ref) {
   const parts = [ref.keyFile && `file ${ref.keyFile}`, ref.keyEnv && `env ${ref.keyEnv}`].filter(Boolean);
@@ -351,100 +356,410 @@ function buildReport(statuses, platform, runtime, today, has) {
       stale.push({ name: "yt-dlp", version: yt.version, ageDays: age, upgrade: ytdlpUpgrade(mgr), ...pipxHint });
     }
   }
-  return { ok: missing.length === 0, platform, runtime, missing, stale };
+  return { ok: depsOk(missing), platform, runtime, missing, stale };
+}
+var depsOk = (missing) => missing.every((m) => m.optional);
+function localMissing(s) {
+  const out = [];
+  if (!s.installed) {
+    out.push({ name: "parakeet", install: "sh <skill-dir>/scripts/video-summary local install", needsSudo: false, note: "~0.9 GB download" });
+  }
+  if (s.hint) {
+    out.push({ name: "libvulkan1", install: "sudo apt install libvulkan1", needsSudo: true, note: "enables GPU recognition; run local install again afterwards", optional: true });
+  }
+  return out;
 }
 
 // src/fetch-cmd.ts
-import { existsSync, statSync } from "node:fs";
-import { mkdir as mkdir3, readdir as readdir3, readFile as readFile4, rm as rm2, writeFile as writeFile3 } from "node:fs/promises";
-import { basename as basename2, extname as extname2, join as join5 } from "node:path";
+import { existsSync } from "node:fs";
+import { mkdir as mkdir5, readdir as readdir4, readFile as readFile5, rm as rm5, writeFile as writeFile4 } from "node:fs/promises";
+import { basename as basename3, extname as extname2, join as join7 } from "node:path";
 
 // src/asr/presets.ts
-var GROQ = { url: "https://api.groq.com/openai/v1", model: "whisper-large-v3-turbo" };
 function resolveProvider(p) {
-  const keys = { keyFile: p.keyFile ?? null, keyEnv: p.keyEnv ?? null };
-  const pick = (own, preset) => own !== undefined ? own : preset;
-  const trimUrl = (u) => u.replace(/\/+$/, "");
-  if (p.type === "whisperx") {
-    if (!p.url)
-      throw new UserError(`config: provider ${p.name}: url is required`);
+  if (p.type === "local") {
     return {
       name: p.name,
-      type: p.type,
-      url: trimUrl(p.url),
-      model: null,
-      format: null,
-      diarize: p.diarize ?? true,
-      local: p.local ?? true,
-      maxBytes: p.maxBytes ?? null,
-      maxSeconds: p.maxSeconds ?? null,
-      keyRequired: false,
-      ...keys
+      type: "local",
+      url: null,
+      model: p.model,
+      diarize: false,
+      keyFile: null,
+      keyEnv: null,
+      engine: p.engine,
+      device: p.device
     };
   }
-  const local = p.local ?? false;
-  let { url, model } = p;
-  let presetBytes = null, presetSeconds = null;
-  let diarize = false;
-  let format = "verbose_json";
-  if (p.preset === "groq") {
-    url ??= GROQ.url;
-    model ??= GROQ.model;
-    if (p.tier === "dev")
-      presetBytes = 1e8;
-    else {
-      presetBytes = 25000000;
-      presetSeconds = 7000;
-    }
-  } else if (p.preset === "openai") {
-    url ??= "https://api.openai.com/v1";
-    diarize = p.diarize ?? false;
-    model ??= diarize ? "gpt-4o-transcribe-diarize" : "whisper-1";
-    if (diarize)
-      format = "diarized_json";
-    presetBytes = 25000000;
-  } else {
-    if (!url)
-      throw new UserError(`config: provider ${p.name}: url is required`);
-    if (!model)
-      throw new UserError(`config: provider ${p.name}: model is required without preset`);
+  const base = { keyFile: p.keyFile ?? null, keyEnv: p.keyEnv ?? null, engine: null, device: null };
+  const url = p.url.replace(/\/+$/, "");
+  if (p.type === "whisperx")
+    return { name: p.name, type: p.type, url, model: null, diarize: p.diarize ?? true, ...base };
+  if (!p.model)
+    throw new UserError(`config: provider ${p.name}: model is required`);
+  return { name: p.name, type: p.type, url, model: p.model, diarize: false, ...base };
+}
+
+// src/local/parakeet.ts
+import { rm } from "node:fs/promises";
+import { availableParallelism } from "node:os";
+
+// src/net.ts
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
+import { Readable } from "node:stream";
+import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
+var oneLine = (s) => s.replace(/\s+/g, " ").trim();
+var GENERIC = new Set(["Error", "TypeError"]);
+function netErrorTag(e) {
+  if (typeof e !== "object" || e === null)
+    return "unknown error";
+  const err = e;
+  for (const c of [err.cause?.code, err.code])
+    if (typeof c === "string" && c)
+      return c;
+  for (const n of [err.cause?.name, err.name])
+    if (typeof n === "string" && n && !GENERIC.has(n))
+      return n;
+  return typeof err.name === "string" && err.name ? err.name : "unknown error";
+}
+var runtimeFetch = (versions) => versions.bun ? globalThis.fetch : httpFetch;
+var NULL_BODY = new Set([204, 205, 304]);
+var REDIRECT = new Set([301, 302, 303, 307, 308]);
+var MAX_REDIRECTS = 5;
+var CROSS_ORIGIN_DROP = ["authorization", "proxy-authorization", "cookie"];
+var httpFetch = (input, init = {}) => send(new URL(input), init, MAX_REDIRECTS);
+async function send(url, init, redirects) {
+  const method = (init.method ?? "GET").toUpperCase();
+  const headers = new Headers(init.headers);
+  const signal = init.signal ?? undefined;
+  let body;
+  if (typeof init.body === "string") {
+    body = init.body;
+  } else if (init.body instanceof FormData) {
+    const encoded = new Response(init.body);
+    headers.set("content-type", encoded.headers.get("content-type"));
+    body = Readable.fromWeb(encoded.body);
+  } else if (init.body != null) {
+    throw new TypeError("httpFetch: unsupported body type");
   }
+  const res = await new Promise((resolve, reject) => {
+    const req = (url.protocol === "https:" ? httpsRequest : httpRequest)(url, { method, headers: Object.fromEntries(headers), signal }, resolve);
+    req.on("error", (e) => {
+      if (body instanceof Readable)
+        body.destroy();
+      reject(signal?.aborted ? signal.reason : e);
+    });
+    if (body instanceof Readable) {
+      body.on("error", (e) => req.destroy(e));
+      body.pipe(req);
+    } else {
+      req.end(body);
+    }
+  });
+  const status = res.statusCode ?? 0;
+  const location = res.headers.location;
+  if (REDIRECT.has(status) && location && (method === "GET" || method === "HEAD") && redirects > 0) {
+    res.resume();
+    const next = new URL(location, url);
+    if (next.origin === url.origin)
+      return send(next, init, redirects - 1);
+    const stripped = new Headers(init.headers);
+    for (const h of CROSS_ORIGIN_DROP)
+      stripped.delete(h);
+    return send(next, { ...init, headers: stripped }, redirects - 1);
+  }
+  const out = new Headers;
+  for (let i = 0;i < res.rawHeaders.length; i += 2)
+    out.append(res.rawHeaders[i], res.rawHeaders[i + 1]);
+  if (NULL_BODY.has(status) || method === "HEAD") {
+    res.resume();
+    return new Response(null, { status, statusText: res.statusMessage, headers: out });
+  }
+  const onAbort = () => res.destroy(signal.reason);
+  signal?.addEventListener("abort", onAbort, { once: true });
+  res.on("close", () => signal?.removeEventListener("abort", onAbort));
+  const encoding = String(res.headers["content-encoding"] ?? "").trim().toLowerCase();
+  const decoder = encoding === "gzip" || encoding === "x-gzip" ? createGunzip() : encoding === "deflate" ? createInflate() : encoding === "br" ? createBrotliDecompress() : null;
+  let stream = res;
+  if (decoder) {
+    res.on("error", (e) => decoder.destroy(e));
+    stream = res.pipe(decoder);
+    out.delete("content-encoding");
+    out.delete("content-length");
+  }
+  return new Response(Readable.toWeb(stream), { status, statusText: res.statusMessage, headers: out });
+}
+
+// src/local/builds.ts
+var LIB_DIRS = ["/usr/lib/x86_64-linux-gnu", "/usr/lib/aarch64-linux-gnu", "/usr/lib64", "/usr/lib"];
+function findVulkanLib(exists) {
+  return LIB_DIRS.some((d) => exists(`${d}/libvulkan.so.1`));
+}
+function planBuilds(o) {
+  const auto = o.device === "auto";
+  if (o.platform === "darwin") {
+    if (o.arch === "arm64")
+      return auto ? { gpu: "macos-metal-arm64", cpu: null } : { gpu: null, cpu: "macos-metal-arm64" };
+    return { gpu: null, cpu: "macos-cpu-x64" };
+  }
+  return { gpu: auto && o.vulkanLib ? `linux-vulkan-${o.arch}` : null, cpu: `linux-cpu-${o.arch}` };
+}
+
+// src/local/paths.ts
+import { join as join2 } from "node:path";
+
+// src/local/pins.ts
+var PARAKEET_VERSION = "v0.6.1";
+var RELEASE_URL = `https://github.com/mudler/parakeet.cpp/releases/download/${PARAKEET_VERSION}/`;
+var BUILDS = {
+  "macos-metal-arm64": {
+    asset: "parakeet-v0.6.1-bin-macos-metal-arm64.tar.gz",
+    size: 2587801,
+    sha256: "bc97b5e6253e928d1127f48f08242324317495ef8708e31db1e09b9537d1bb74",
+    gpu: true
+  },
+  "macos-cpu-x64": {
+    asset: "parakeet-v0.6.1-bin-macos-cpu-x64.tar.gz",
+    size: 2753061,
+    sha256: "82392069ea091c896dcf86fb5d86f20d107c71f6bad4b9e79a114523d98fb643",
+    gpu: false
+  },
+  "linux-cpu-x64": {
+    asset: "parakeet-v0.6.1-bin-linux-cpu-x64.tar.gz",
+    size: 2727511,
+    sha256: "cce60d122ab72e1068cd0d164e54a21655a0b83f1b9c21befc20124f5a972c10",
+    gpu: false
+  },
+  "linux-cpu-arm64": {
+    asset: "parakeet-v0.6.1-bin-linux-cpu-arm64.tar.gz",
+    size: 2448702,
+    sha256: "85b6dafce8a984d0971d94865da5e2e50e111604fb6e7030f5b599dc2616c8db",
+    gpu: false
+  },
+  "linux-vulkan-x64": {
+    asset: "parakeet-v0.6.1-bin-linux-vulkan-x64.tar.gz",
+    size: 37493205,
+    sha256: "881fd99d531a4dcfc26119a4969aec61b8390ba84e9d641716411d4c1db2de3a",
+    gpu: true
+  },
+  "linux-vulkan-arm64": {
+    asset: "parakeet-v0.6.1-bin-linux-vulkan-arm64.tar.gz",
+    size: 29743428,
+    sha256: "96bc0a9ac524ea875f7260fbaed65632d55cd249e251d0f8a69d9df13dc30c9c",
+    gpu: true
+  }
+};
+var MODEL = {
+  file: "ultra-q8_0.gguf",
+  url: "https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/741158ae71e64ef5c89385862c18f777d07a97a1/ultra-q8_0.gguf",
+  size: 941517728,
+  sha256: "c2fb452a9df468a141012b01c8c168a25ce93f710897c7de6e353c6cc250986a"
+};
+var LANGUAGES = [
+  "bg",
+  "hr",
+  "cs",
+  "da",
+  "nl",
+  "en",
+  "et",
+  "fi",
+  "fr",
+  "de",
+  "el",
+  "hu",
+  "it",
+  "lv",
+  "lt",
+  "mt",
+  "pl",
+  "pt",
+  "ro",
+  "sk",
+  "sl",
+  "es",
+  "sv",
+  "ru",
+  "uk"
+];
+
+// src/local/paths.ts
+function localPaths(env, home) {
+  const data = env.XDG_DATA_HOME || join2(home, ".local", "share");
+  const cache = env.XDG_CACHE_HOME || join2(home, ".cache");
+  const state = env.XDG_STATE_HOME || join2(home, ".local", "state");
+  const binDir = (build) => join2(data, "video-summary", "parakeet", PARAKEET_VERSION, build);
   return {
-    name: p.name,
-    type: p.type,
-    url: trimUrl(url),
-    model,
-    format,
-    diarize,
-    local,
-    maxBytes: pick(p.maxBytes, presetBytes),
-    maxSeconds: pick(p.maxSeconds, presetSeconds),
-    keyRequired: !local,
-    ...keys
+    binDir,
+    cli: (build) => join2(binDir(build), "parakeet-cli"),
+    model: join2(cache, "video-summary", "models", MODEL.file),
+    speedFile: join2(state, "video-summary", "speed.json")
   };
 }
 
-// src/limits.ts
-var HEADROOM = 0.96;
-var usableBytes = (p) => p.maxBytes === null ? null : Math.floor(HEADROOM * p.maxBytes);
-function targetBytes(ps) {
-  const caps = ps.filter((p) => !p.local && p.maxBytes !== null).map((p) => p.maxBytes);
-  return caps.length ? Math.floor(HEADROOM * Math.min(...caps)) : null;
+// src/local/parakeet.ts
+var LOCAL_TIMEOUT_MS = 2 * 60 * 60000;
+var MAX_CUE_SEC = 30;
+var PAUSE_SEC = 1;
+var SENTENCE_END = /[.?!…]$/;
+var EPS = 0.000001;
+function wordsToCues(words) {
+  const cues = [];
+  let cur = null;
+  for (const word of words) {
+    const text = word.w.trim();
+    if (!text)
+      continue;
+    if (cur && (word.start - cur.end >= PAUSE_SEC - EPS || word.end - cur.start > MAX_CUE_SEC + EPS)) {
+      cues.push(cur);
+      cur = null;
+    }
+    if (cur) {
+      cur.text += ` ${text}`;
+      cur.end = word.end;
+    } else {
+      cur = { start: word.start, end: word.end, text };
+    }
+    if (SENTENCE_END.test(text)) {
+      cues.push(cur);
+      cur = null;
+    }
+  }
+  if (cur)
+    cues.push(cur);
+  return cues;
 }
-function bitrateFor(durationSec, mode, target) {
-  if (mode === "fixed" || target === null || durationSec === null || durationSec <= 0)
-    return 32;
-  return Math.min(32, Math.max(16, Math.floor(target * 8 / durationSec / 1000)));
+var lastLine = (r) => r.stderr.split(`
+`).map((l) => l.trim()).filter(Boolean).at(-1)?.slice(0, 300) ?? `exit code ${r.code}`;
+function parseWords(name, stdout) {
+  let words;
+  try {
+    words = JSON.parse(stdout).words;
+  } catch {
+    words = undefined;
+  }
+  const ok = Array.isArray(words) && words.every((x) => typeof x?.w === "string" && Number.isFinite(x?.start) && Number.isFinite(x?.end));
+  if (!ok)
+    throw new UserError(`${name}: unexpected parakeet-cli output`);
+  return words;
 }
-function maxDurationFor(p, kbps) {
-  const usable = usableBytes(p);
-  const byBytes = usable === null ? null : Math.floor(usable * 8 / (kbps * 1000));
-  if (byBytes === null)
-    return p.maxSeconds;
-  return p.maxSeconds === null ? byBytes : Math.min(p.maxSeconds, byBytes);
+function runBuilds(p, d) {
+  const plan = planBuilds({ platform: d.platform, arch: d.arch, vulkanLib: findVulkanLib(d.exists), device: p.device });
+  const gpu = plan.gpu && d.exists(localPaths(d.env, d.home).cli(plan.gpu)) ? plan.gpu : null;
+  return { gpu, cpu: plan.cpu ?? plan.gpu };
 }
-function limitsReport(ps) {
-  return ps.map((p) => ({ provider: p.name, adaptiveSec: maxDurationFor(p, 16), fixedSec: maxDurationFor(p, 32) }));
+var plannedDevice = (p, d) => runBuilds(p, d).gpu ? "gpu" : "cpu";
+async function transcribeParakeet(ogg, p, d) {
+  const paths = localPaths(d.env, d.home);
+  const { gpu: gpuBuild, cpu: cpuBuild } = runBuilds(p, d);
+  const wav = `${ogg.replace(/\.[^./]*$/, "")}.wav`;
+  const threads = String(Math.min(availableParallelism(), 8));
+  const clock = d.clock ?? Date.now;
+  const transcribe = async (build, env) => {
+    const started = clock();
+    const r = await d.run([paths.cli(build), "transcribe", "--model", paths.model, "--input", wav, "--vad", "--json", "--threads", threads], env ? { timeoutMs: LOCAL_TIMEOUT_MS, env } : { timeoutMs: LOCAL_TIMEOUT_MS });
+    return { ...r, elapsedMs: clock() - started };
+  };
+  const timedOut = () => new UserError(`${p.name}: timed out after ${LOCAL_TIMEOUT_MS / 1000} s`);
+  try {
+    const conv = await d.run([
+      "ffmpeg",
+      "-nostdin",
+      "-loglevel",
+      "error",
+      "-y",
+      "-i",
+      ogg,
+      "-vn",
+      "-ac",
+      "1",
+      "-ar",
+      "16000",
+      "-c:a",
+      "pcm_s16le",
+      "-f",
+      "wav",
+      wav
+    ]);
+    if (conv.code !== 0) {
+      throw new UserError(`${p.name}: ffmpeg could not convert audio to wav: ${oneLine(conv.stderr).slice(0, 300)}`);
+    }
+    const notes = [];
+    let device = "cpu";
+    let r = null;
+    if (gpuBuild) {
+      const g = await transcribe(gpuBuild);
+      if (g.code === 124)
+        throw timedOut();
+      if (g.code === 0) {
+        r = g;
+        device = "gpu";
+      } else {
+        notes.push(`${p.name}: GPU run failed (${lastLine(g)}), used CPU`);
+      }
+    }
+    if (!r) {
+      r = await transcribe(cpuBuild, BUILDS[cpuBuild].gpu ? { PARAKEET_DEVICE: "cpu" } : undefined);
+      if (r.code === 124)
+        throw timedOut();
+      if (r.code !== 0)
+        throw new UserError(`${p.name}: parakeet-cli failed (${lastLine(r)})`);
+    }
+    const cues = wordsToCues(parseWords(p.name, r.stdout));
+    if (cues.length === 0)
+      throw new UserError(`${p.name}: no speech recognized`);
+    const out = {
+      cues,
+      provider: p.name,
+      diarized: false,
+      speakers: 0,
+      language: null,
+      device,
+      elapsedMs: r.elapsedMs
+    };
+    if (notes.length)
+      out.notes = notes;
+    return out;
+  } finally {
+    await rm(wav, { force: true });
+  }
+}
+
+// src/local/speed.ts
+import { randomBytes } from "node:crypto";
+import { mkdir as mkdir2, readFile as readFile2, rename, rm as rm2, writeFile as writeFile2 } from "node:fs/promises";
+import { dirname as dirname2 } from "node:path";
+var SLOW_MINUTES = 10;
+var DEFAULT_SPEED = { cpu: 8, gpu: 60 };
+var speedKey = (p, device) => `${p.engine}:${p.model}:${device}`;
+async function readSpeeds(file) {
+  let data;
+  try {
+    data = JSON.parse(await readFile2(file, "utf8"));
+  } catch {
+    return {};
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data))
+    return {};
+  return Object.fromEntries(Object.entries(data).filter((e) => typeof e[1] === "number" && Number.isFinite(e[1]) && e[1] > 0));
+}
+async function recordSpeed(file, key, measured) {
+  const speeds = await readSpeeds(file);
+  const old = speeds[key];
+  speeds[key] = old === undefined ? measured : 0.5 * old + 0.5 * measured;
+  await mkdir2(dirname2(file), { recursive: true });
+  const tmp = `${file}.${randomBytes(6).toString("hex")}.tmp`;
+  try {
+    await writeFile2(tmp, JSON.stringify(speeds, null, 2) + `
+`);
+    await rename(tmp, file);
+  } finally {
+    await rm2(tmp, { force: true });
+  }
+}
+function estimateLocal(p, durationSec, speeds, plannedDevice) {
+  const speed = speeds[speedKey(p, plannedDevice)] ?? DEFAULT_SPEED[plannedDevice];
+  return { minutes: durationSec / speed / 60, device: plannedDevice, speed };
 }
 
 // src/asr/openai-compatible.ts
@@ -562,93 +877,6 @@ function normalizeLanguage(raw) {
   return WHISPER_NAMES[v] ?? null;
 }
 
-// src/net.ts
-import { request as httpRequest } from "node:http";
-import { request as httpsRequest } from "node:https";
-import { Readable } from "node:stream";
-import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
-var oneLine = (s) => s.replace(/\s+/g, " ").trim();
-var GENERIC = new Set(["Error", "TypeError"]);
-function netErrorTag(e) {
-  if (typeof e !== "object" || e === null)
-    return "unknown error";
-  const err = e;
-  for (const c of [err.cause?.code, err.code])
-    if (typeof c === "string" && c)
-      return c;
-  for (const n of [err.cause?.name, err.name])
-    if (typeof n === "string" && n && !GENERIC.has(n))
-      return n;
-  return typeof err.name === "string" && err.name ? err.name : "unknown error";
-}
-var runtimeFetch = (versions) => versions.bun ? globalThis.fetch : httpFetch;
-var NULL_BODY = new Set([204, 205, 304]);
-var REDIRECT = new Set([301, 302, 303, 307, 308]);
-var MAX_REDIRECTS = 5;
-var CROSS_ORIGIN_DROP = ["authorization", "proxy-authorization", "cookie"];
-var httpFetch = (input, init = {}) => send(new URL(input), init, MAX_REDIRECTS);
-async function send(url, init, redirects) {
-  const method = (init.method ?? "GET").toUpperCase();
-  const headers = new Headers(init.headers);
-  const signal = init.signal ?? undefined;
-  let body;
-  if (typeof init.body === "string") {
-    body = init.body;
-  } else if (init.body instanceof FormData) {
-    const encoded = new Response(init.body);
-    headers.set("content-type", encoded.headers.get("content-type"));
-    body = Readable.fromWeb(encoded.body);
-  } else if (init.body != null) {
-    throw new TypeError("httpFetch: unsupported body type");
-  }
-  const res = await new Promise((resolve, reject) => {
-    const req = (url.protocol === "https:" ? httpsRequest : httpRequest)(url, { method, headers: Object.fromEntries(headers), signal }, resolve);
-    req.on("error", (e) => {
-      if (body instanceof Readable)
-        body.destroy();
-      reject(signal?.aborted ? signal.reason : e);
-    });
-    if (body instanceof Readable) {
-      body.on("error", (e) => req.destroy(e));
-      body.pipe(req);
-    } else {
-      req.end(body);
-    }
-  });
-  const status = res.statusCode ?? 0;
-  const location = res.headers.location;
-  if (REDIRECT.has(status) && location && (method === "GET" || method === "HEAD") && redirects > 0) {
-    res.resume();
-    const next = new URL(location, url);
-    if (next.origin === url.origin)
-      return send(next, init, redirects - 1);
-    const stripped = new Headers(init.headers);
-    for (const h of CROSS_ORIGIN_DROP)
-      stripped.delete(h);
-    return send(next, { ...init, headers: stripped }, redirects - 1);
-  }
-  const out = new Headers;
-  for (let i = 0;i < res.rawHeaders.length; i += 2)
-    out.append(res.rawHeaders[i], res.rawHeaders[i + 1]);
-  if (NULL_BODY.has(status) || method === "HEAD") {
-    res.resume();
-    return new Response(null, { status, statusText: res.statusMessage, headers: out });
-  }
-  const onAbort = () => res.destroy(signal.reason);
-  signal?.addEventListener("abort", onAbort, { once: true });
-  res.on("close", () => signal?.removeEventListener("abort", onAbort));
-  const encoding = String(res.headers["content-encoding"] ?? "").trim().toLowerCase();
-  const decoder = encoding === "gzip" || encoding === "x-gzip" ? createGunzip() : encoding === "deflate" ? createInflate() : encoding === "br" ? createBrotliDecompress() : null;
-  let stream = res;
-  if (decoder) {
-    res.on("error", (e) => decoder.destroy(e));
-    stream = res.pipe(decoder);
-    out.delete("content-encoding");
-    out.delete("content-length");
-  }
-  return new Response(Readable.toWeb(stream), { status, statusText: res.statusMessage, headers: out });
-}
-
 // src/asr/types.ts
 var primaryLang = (l) => l ? l.split(/[-_]/)[0].toLowerCase() || null : null;
 var joinUrl = (base, path) => base.replace(/\/+$/, "") + path;
@@ -678,30 +906,13 @@ function parseVerbose(json, provider) {
   const cues = (body.segments ?? []).map((s) => ({ start: s.start, end: s.end, text: s.text.trim() }));
   return { cues, provider, diarized: false, speakers: 0, language: normalizeLanguage(body.language) };
 }
-function parseDiarized(json, provider) {
-  const body = json;
-  const names = new Map;
-  const cues = (body.segments ?? []).map((s) => {
-    const cue = { start: s.start, end: s.end, text: s.text.trim() };
-    if (!s.speaker)
-      return cue;
-    if (!names.has(s.speaker))
-      names.set(s.speaker, `Speaker ${names.size + 1}`);
-    return { ...cue, speaker: names.get(s.speaker) };
-  });
-  return { cues, provider, diarized: names.size > 0, speakers: names.size, language: normalizeLanguage(body.language) };
-}
 async function transcribeOpenAI(file, o, p, key, f) {
-  const diarized = p.format === "diarized_json";
   const lang = primaryLang(o.language);
   const form = new FormData;
   form.append("file", await openAsBlob(file), "audio.ogg");
   form.append("model", p.model ?? "");
-  form.append("response_format", diarized ? "diarized_json" : "verbose_json");
-  if (diarized)
-    form.append("chunking_strategy", "auto");
-  else
-    form.append("timestamp_granularities[]", "segment");
+  form.append("response_format", "verbose_json");
+  form.append("timestamp_granularities[]", "segment");
   if (lang)
     form.append("language", lang);
   const r = await postAsr(p.name, f, joinUrl(p.url, "/audio/transcriptions"), authHeaders(key), form);
@@ -715,7 +926,7 @@ async function transcribeOpenAI(file, o, p, key, f) {
   }
   if (!r.ok)
     throw new Error(`${p.name} responded ${r.status}: ${oneLine(text).slice(0, 500)}`);
-  const res = (diarized ? parseDiarized : parseVerbose)(JSON.parse(text), p.name);
+  const res = parseVerbose(JSON.parse(text), p.name);
   return lang ? { ...res, language: lang } : res;
 }
 
@@ -756,49 +967,36 @@ async function transcribeWhisperx(file, o, p, key, f) {
 }
 
 // src/asr/select.ts
-async function probeProviders(ps, f, env, home) {
+async function probeProviders(ps, f, env, home, local) {
   return Promise.all(ps.map(async (provider) => {
+    if (provider.type === "local")
+      return { provider, available: local?.installed ?? false, keyMissing: null };
     let key = null;
-    let keyMissing = null;
     try {
       key = await readKey(provider, env, home);
-      if (provider.keyRequired && key === null)
-        keyMissing = keySource(provider) ?? "no key configured";
     } catch (e) {
       if (!(e instanceof UserError))
         throw e;
       return { provider, available: true, keyMissing: e.message };
     }
-    let available = true;
-    if (provider.type === "whisperx")
-      available = await whisperxHealthy(provider.url, f, key);
-    else if (provider.local)
-      available = await modelsReachable(provider.url, f, key);
-    return { provider, available, keyMissing };
+    const available = provider.type === "whisperx" ? await whisperxHealthy(provider.url, f, key) : await modelsReachable(provider.url, f, key);
+    return { provider, available, keyMissing: null };
   }));
 }
-var hms = (sec) => {
-  const s = Math.floor(sec);
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${Math.floor(s / 3600)}:${pad(Math.floor(s % 3600 / 60))}:${pad(s % 60)}`;
-};
-var mb = (b) => `${(b / 1e6).toFixed(1)} MB`;
 function reject(c, i) {
-  const p = c.provider;
+  const lang = primaryLang(i.language);
+  if (c.provider.type === "local" && lang && !LANGUAGES.includes(lang))
+    return `language ${lang} not supported`;
   if (!c.available)
-    return "not reachable";
+    return c.provider.type === "local" ? "local engine not installed — run `local install`" : "not reachable";
   if (c.keyMissing)
     return `no API key (${c.keyMissing})`;
-  if (p.maxSeconds !== null && i.durationSec > p.maxSeconds) {
-    return `${hms(i.durationSec)} exceeds duration limit ${hms(p.maxSeconds)}`;
+  if (c.provider.type === "local" && !i.acceptSlow) {
+    const e = i.estimate(c.provider, i.durationSec);
+    if (e && e.minutes > SLOW_MINUTES) {
+      return `~${Math.ceil(e.minutes)} min on ${e.device.toUpperCase()} (measured speed ${Math.round(e.speed)}x); add --accept-slow to wait`;
+    }
   }
-  const bytes = i.durationSec * i.kbps * 1000 / 8;
-  const usable = usableBytes(p);
-  if (p.maxBytes !== null && usable !== null && bytes > usable) {
-    return `~${mb(bytes)} exceeds ${Math.round(HEADROOM * 100)}% of file limit ${mb(p.maxBytes)}`;
-  }
-  if (!p.local && i.privateSource && !i.allowCloud)
-    return "cloud provider, needs --allow-cloud";
   return null;
 }
 function chooseProvider(i) {
@@ -813,16 +1011,16 @@ function chooseProvider(i) {
   }
   return { error: `no ASR provider fits: ${reasons.join("; ")}` };
 }
-async function transcribeWith(p, file, o, f, env, home) {
-  const key = await readKey(p, env, home);
-  if (p.keyRequired && key === null)
-    throw new UserError(`${p.name}: no API key (${keySource(p) ?? "no key configured"})`);
-  return p.type === "whisperx" ? transcribeWhisperx(file, o, p, key, f) : transcribeOpenAI(file, o, p, key, f);
+async function transcribeWith(p, file, o, d) {
+  if (p.type === "local")
+    return { ...await transcribeParakeet(file, p, d), language: o.language };
+  const key = await readKey(p, d.env, d.home);
+  return p.type === "whisperx" ? transcribeWhisperx(file, o, p, key, d.fetch) : transcribeOpenAI(file, o, p, key, d.fetch);
 }
 
 // src/audio.ts
-import { rename, rm } from "node:fs/promises";
-async function compressAudio(input, outOgg, run, kbps = 32) {
+import { rename as rename2, rm as rm3 } from "node:fs/promises";
+async function compressAudio(input, outOgg, run) {
   const tmp = `${outOgg}.tmp`;
   const r = await run([
     "ffmpeg",
@@ -840,16 +1038,16 @@ async function compressAudio(input, outOgg, run, kbps = 32) {
     "-c:a",
     "libopus",
     "-b:a",
-    `${kbps}k`,
+    "32k",
     "-f",
     "ogg",
     tmp
   ]);
   if (r.code !== 0) {
-    await rm(tmp, { force: true });
+    await rm3(tmp, { force: true });
     throw new Error(`ffmpeg: ${r.stderr.trim()}`);
   }
-  await rename(tmp, outOgg);
+  await rename2(tmp, outOgg);
 }
 async function probeDuration(file, run) {
   const r = await run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", file]);
@@ -912,14 +1110,14 @@ function cleanCues(cues) {
   }
   return out;
 }
-var SENTENCE_END = /[.!?…]["»”)]?$/;
+var SENTENCE_END2 = /[.!?…]["»”)]?$/;
 function toParagraphs(cues) {
   const ps = [];
   let para = null;
   let prev = null;
   for (const c of cues) {
     const span = para ? c.start - para.start : 0;
-    const split = !para || !prev || c.speaker !== para.speaker || span >= 120 || span >= 60 && SENTENCE_END.test(prev.text) || c.start - prev.end >= 3 && span >= 20;
+    const split = !para || !prev || c.speaker !== para.speaker || span >= 120 || span >= 60 && SENTENCE_END2.test(prev.text) || c.start - prev.end >= 3 && span >= 20;
     if (split) {
       para = c.speaker ? { start: c.start, speaker: c.speaker, text: c.text } : { start: c.start, text: c.text };
       ps.push(para);
@@ -964,20 +1162,170 @@ function dedupeRolling(cues) {
   return out;
 }
 
+// src/local/install.ts
+import { createHash, randomBytes as randomBytes2 } from "node:crypto";
+import { createReadStream, statSync } from "node:fs";
+import { mkdir as mkdir3, mkdtemp, open, readdir, rename as rename3, rm as rm4, stat } from "node:fs/promises";
+import { basename, dirname as dirname3, join as join3 } from "node:path";
+var DEFAULT_PINS = { BUILDS, MODEL };
+function plannedBuilds(d, vulkanLib) {
+  const p = planBuilds({ platform: d.platform, arch: d.arch, vulkanLib, device: "auto" });
+  return [p.gpu, p.cpu].filter((b) => b !== null);
+}
+function localStatus(d, pins = DEFAULT_PINS) {
+  const paths = localPaths(d.env, d.home);
+  const vulkanLib = findVulkanLib(d.exists);
+  const builds = plannedBuilds(d, vulkanLib).filter((b) => d.exists(paths.cli(b)));
+  const cpuBuild = planBuilds({ platform: d.platform, arch: d.arch, vulkanLib, device: "cpu" }).cpu;
+  const present = d.exists(paths.model);
+  const verified = present && sizeOf(paths.model) === pins.MODEL.size;
+  const out = {
+    installed: d.exists(paths.cli(cpuBuild)) && verified,
+    version: PARAKEET_VERSION,
+    builds,
+    model: { present, verified, path: paths.model },
+    vulkan_lib: vulkanLib
+  };
+  if (d.platform === "linux" && !vulkanLib && d.has("nvidia-smi"))
+    out.hint = "sudo apt install libvulkan1";
+  return out;
+}
+async function localInstall(d, pins = DEFAULT_PINS) {
+  const paths = localPaths(d.env, d.home);
+  const builds = plannedBuilds(d, findVulkanLib(d.exists));
+  let downloaded = 0;
+  for (const b of builds)
+    downloaded += await ensureBuild(d, paths, b, pins.BUILDS[b]);
+  downloaded += await ensureModel(d.fetch, paths.model, pins.MODEL);
+  return { version: PARAKEET_VERSION, builds, model: { path: paths.model, bytes: pins.MODEL.size }, downloaded_bytes: downloaded };
+}
+async function ensureBuild(d, paths, build, pin) {
+  const cli = paths.cli(build);
+  if (d.exists(cli))
+    return 0;
+  const target = paths.binDir(build);
+  await mkdir3(dirname3(target), { recursive: true });
+  const tmp = await mkdtemp(join3(dirname3(target), `.${build}-`));
+  try {
+    const archive = join3(tmp, pin.asset);
+    const bytes = await download(d.fetch, RELEASE_URL + pin.asset, archive, pin, pin.asset);
+    const r = await d.run(["tar", "-xzf", archive, "-C", tmp]);
+    if (r.code !== 0)
+      throw new UserError(`could not unpack ${pin.asset}: ${oneLine(r.stderr).slice(0, 300)}`);
+    const unpacked = join3(tmp, `parakeet-${PARAKEET_VERSION}-bin-${build}`);
+    if (!d.exists(join3(unpacked, "parakeet-cli")))
+      throw new UserError(`could not unpack ${pin.asset}: no parakeet-cli inside`);
+    try {
+      await rename3(unpacked, target);
+    } catch {
+      if (d.exists(cli))
+        return bytes;
+      throw new UserError(`${target} exists but has no parakeet-cli — remove it and retry \`local install\``);
+    }
+    return bytes;
+  } finally {
+    await rm4(tmp, { recursive: true, force: true });
+  }
+}
+async function ensureModel(fetch, path, pin) {
+  await mkdir3(dirname3(path), { recursive: true });
+  const check = await verify(path, pin);
+  if (check.bad && (await stat(path).catch(() => null))?.ino === check.bad.ino)
+    await rm4(path, { force: true });
+  const bytes = check.ok ? 0 : await download(fetch, pin.url, path, pin, pin.file);
+  const prefix = `${basename(path)}.`;
+  for (const name of await readdir(dirname3(path))) {
+    if (name.startsWith(prefix) && name.endsWith(".part"))
+      await rm4(join3(dirname3(path), name), { force: true });
+  }
+  return bytes;
+}
+var mismatch = (file) => new UserError(`downloaded ${file} does not match the pinned checksum — retry \`local install\``);
+async function net(file, p) {
+  try {
+    return await p();
+  } catch (e) {
+    throw new UserError(`could not download ${file}: ${netErrorTag(e)}`);
+  }
+}
+async function download(fetch, url, target, pin, file) {
+  const part = `${target}.${randomBytes2(6).toString("hex")}.part`;
+  const hash = createHash("sha256");
+  let bytes = 0;
+  const fh = await open(part, "wx");
+  try {
+    try {
+      const res = await net(file, () => fetch(url));
+      if (!res.ok) {
+        await res.body?.cancel().catch(() => {});
+        throw new UserError(`could not download ${file}: HTTP ${res.status}`);
+      }
+      const reader = res.body?.getReader();
+      for (;; ) {
+        const chunk = reader ? await net(file, () => reader.read()) : { done: true, value: undefined };
+        if (chunk.done)
+          break;
+        bytes += chunk.value.length;
+        if (bytes > pin.size) {
+          await reader.cancel().catch(() => {});
+          throw mismatch(file);
+        }
+        hash.update(chunk.value);
+        for (let off = 0;off < chunk.value.length; )
+          off += (await fh.write(chunk.value, off)).bytesWritten;
+      }
+    } finally {
+      await fh.close();
+    }
+    if (bytes !== pin.size || hash.digest("hex") !== pin.sha256)
+      throw mismatch(file);
+    try {
+      await rename3(part, target);
+    } catch (e) {
+      if (e.code !== "ENOENT" || sizeOf(target) !== pin.size)
+        throw e;
+    }
+    return bytes;
+  } catch (e) {
+    await rm4(part, { force: true });
+    throw e;
+  }
+}
+async function verify(path, pin) {
+  const st = await stat(path).catch(() => null);
+  if (!st)
+    return { ok: false };
+  if (st.size === pin.size) {
+    const hash = createHash("sha256");
+    for await (const chunk of createReadStream(path))
+      hash.update(chunk);
+    if (hash.digest("hex") === pin.sha256)
+      return { ok: true };
+  }
+  return { ok: false, bad: st };
+}
+function sizeOf(path) {
+  try {
+    return statSync(path).size;
+  } catch {
+    return null;
+  }
+}
+
 // src/meta.ts
-import { access, readFile as readFile2, writeFile as writeFile2 } from "node:fs/promises";
-import { join as join2 } from "node:path";
+import { access, readFile as readFile3, writeFile as writeFile3 } from "node:fs/promises";
+import { join as join4 } from "node:path";
 async function readMeta(dir) {
-  const p = join2(dir, "meta.json");
+  const p = join4(dir, "meta.json");
   try {
     await access(p);
   } catch {
     return null;
   }
-  return JSON.parse(await readFile2(p, "utf8"));
+  return JSON.parse(await readFile3(p, "utf8"));
 }
 async function writeMeta(dir, m) {
-  await writeFile2(join2(dir, "meta.json"), JSON.stringify(m, null, 2) + `
+  await writeFile3(join4(dir, "meta.json"), JSON.stringify(m, null, 2) + `
 `);
 }
 function estimateTokens(text) {
@@ -985,8 +1333,8 @@ function estimateTokens(text) {
 }
 
 // src/paths.ts
-import { mkdir as mkdir2, readdir, readFile as readFile3 } from "node:fs/promises";
-import { basename, dirname as dirname2, extname, join as join3, resolve } from "node:path";
+import { mkdir as mkdir4, readdir as readdir2, readFile as readFile4 } from "node:fs/promises";
+import { basename as basename2, dirname as dirname4, extname, join as join5, resolve } from "node:path";
 function slugify(title) {
   const s = title.toLowerCase().replace(/[^\p{L}\p{M}\p{N}]+/gu, "-").replace(/^-+|-+$/g, "");
   const cut = Array.from(s).slice(0, 60).join("").replace(/-+$/g, "");
@@ -994,24 +1342,24 @@ function slugify(title) {
 }
 function resolveInputPath(p, cwd, home) {
   if (p === "~" || p.startsWith("~/"))
-    return join3(home, p.slice(1));
+    return join5(home, p.slice(1));
   return resolve(cwd, p);
 }
 async function findSidecarSubs(absFile, preferLang) {
-  const dir = dirname2(absFile);
-  const stem = basename(absFile, extname(absFile));
-  const rests = (await readdir(dir)).filter((e) => e.startsWith(`${stem}.`)).map((e) => ({ e, rest: e.slice(stem.length + 1) }));
+  const dir = dirname4(absFile);
+  const stem = basename2(absFile, extname(absFile));
+  const rests = (await readdir2(dir)).filter((e) => e.startsWith(`${stem}.`)).map((e) => ({ e, rest: e.slice(stem.length + 1) }));
   for (const ext of ["srt", "vtt"]) {
     const hit = rests.find((r) => r.rest.toLowerCase() === ext);
     if (hit)
-      return join3(dir, hit.e);
+      return join5(dir, hit.e);
   }
   const lang = rests.filter((r) => /^[a-z]{2,3}(-[a-z0-9]{2,8})*\.(srt|vtt)$/i.test(r.rest)).map((r) => r.e).sort();
   if (!lang.length)
     return null;
   const want = preferLang?.toLowerCase().split("-")[0];
   const hit = want ? lang.find((e) => e.slice(stem.length + 1).split(".")[0].toLowerCase().split("-")[0] === want) : undefined;
-  return join3(dir, hit ?? lang[0]);
+  return join5(dir, hit ?? lang[0]);
 }
 function localDate(d) {
   const pad = (n) => String(n).padStart(2, "0");
@@ -1019,31 +1367,31 @@ function localDate(d) {
 }
 async function sourceKeyOf(dir) {
   try {
-    return JSON.parse(await readFile3(join3(dir, "meta.json"), "utf8")).source_key ?? null;
+    return JSON.parse(await readFile4(join5(dir, "meta.json"), "utf8")).source_key ?? null;
   } catch {
     return null;
   }
 }
 async function resolveItemDir(baseDir, sourceKey, title, today) {
-  await mkdir2(baseDir, { recursive: true });
-  const entries = await readdir(baseDir, { withFileTypes: true });
+  await mkdir4(baseDir, { recursive: true });
+  const entries = await readdir2(baseDir, { withFileTypes: true });
   for (const e of entries) {
-    if (e.isDirectory() && await sourceKeyOf(join3(baseDir, e.name)) === sourceKey)
-      return join3(baseDir, e.name);
+    if (e.isDirectory() && await sourceKeyOf(join5(baseDir, e.name)) === sourceKey)
+      return join5(baseDir, e.name);
   }
   const names = new Set(entries.map((e) => e.name));
   const stem = `${localDate(today)}-${slugify(title)}`;
   let name = stem;
   for (let i = 2;names.has(name); i++)
     name = `${stem}-${i}`;
-  const dir = join3(baseDir, name);
-  await mkdir2(dir, { recursive: true });
+  const dir = join5(baseDir, name);
+  await mkdir4(dir, { recursive: true });
   return dir;
 }
 
 // src/ytdlp.ts
-import { readdir as readdir2 } from "node:fs/promises";
-import { join as join4 } from "node:path";
+import { readdir as readdir3 } from "node:fs/promises";
+import { join as join6 } from "node:path";
 var YTDLP_BASE = ["yt-dlp", "--js-runtimes", "node", "--js-runtimes", "bun", "--no-playlist"];
 function ytdlpError(stderr) {
   const lines = stderr.split(`
@@ -1088,8 +1436,8 @@ function pickAutoTrack(m) {
   return null;
 }
 async function findOne(dir, prefix, exts) {
-  const hit = (await readdir2(dir)).filter((f) => f.startsWith(prefix) && !f.endsWith(".part") && !f.endsWith(".ytdl") && (!exts || exts.some((x) => f.endsWith(x)))).sort();
-  return hit.length ? join4(dir, hit[0]) : null;
+  const hit = (await readdir3(dir)).filter((f) => f.startsWith(prefix) && !f.endsWith(".part") && !f.endsWith(".ytdl") && (!exts || exts.some((x) => f.endsWith(x)))).sort();
+  return hit.length ? join6(dir, hit[0]) : null;
 }
 var RETRY_DELAYS_MS = [2000, 5000];
 var defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -1113,7 +1461,7 @@ async function downloadSubs(url, lang, workDir, run, auto = false, sleep = defau
     "--sub-format",
     "vtt/srt/best",
     "-o",
-    join4(workDir, "subs.%(ext)s"),
+    join6(workDir, "subs.%(ext)s"),
     url
   ], run, sleep);
   const f = await findOne(workDir, "subs.", [".vtt", ".srt"]);
@@ -1122,7 +1470,7 @@ async function downloadSubs(url, lang, workDir, run, auto = false, sleep = defau
   return f;
 }
 async function downloadAudio(url, workDir, run, sleep = defaultSleep) {
-  await runDownload([...YTDLP_BASE, "-f", "bestaudio/best", "-o", join4(workDir, "src.%(ext)s"), url], run, sleep);
+  await runDownload([...YTDLP_BASE, "-f", "bestaudio/best", "-o", join6(workDir, "src.%(ext)s"), url], run, sleep);
   const f = await findOne(workDir, "src.");
   if (!f)
     throw new UserError("yt-dlp did not download the audio");
@@ -1138,74 +1486,67 @@ async function coversDuration(ogg, expected, run) {
   }
 }
 async function readSubs(file) {
-  const text = await readFile4(file, "utf8");
+  const text = await readFile5(file, "utf8");
   return file.endsWith(".srt") ? parseSrt(text) : parseVtt(text);
 }
 async function recognize(getAudio, work, item, flags, d) {
   const providers = d.cfg.providers.map(resolveProvider);
-  const candidates = await probeProviders(providers, d.fetch, d.env, d.home);
-  const kbps = bitrateFor(item.duration, d.cfg.bitrate, targetBytes(providers));
-  const pick = (durationSec, rate = kbps) => {
-    const c = chooseProvider({ candidates, durationSec, kbps: rate, privateSource: item.privateSource, allowCloud: flags.allowCloud });
+  const local = providers.some((p) => p.type === "local") ? localStatus(d) : undefined;
+  const candidates = await probeProviders(providers, d.fetch, d.env, d.home, local);
+  const language = primaryLang(item.language);
+  const speedFile = localPaths(d.env, d.home).speedFile;
+  const speeds = local ? await readSpeeds(speedFile) : {};
+  const estimate = (p, durationSec) => p.type === "local" ? estimateLocal(p, durationSec, speeds, plannedDevice(p, d)) : null;
+  const select = (cs, durationSec) => chooseProvider({ candidates: cs, durationSec, language, acceptSlow: flags.acceptSlow ?? false, estimate });
+  const pick = (durationSec) => {
+    const c = select(candidates, durationSec);
     if ("error" in c)
       throw new UserError(c.error);
     return c.provider;
   };
-  let durationSec = item.duration;
-  let rate = kbps;
-  let provider = durationSec !== null ? pick(durationSec) : null;
+  let provider = item.duration !== null ? pick(item.duration) : null;
   if (!provider)
     pick(0);
-  const ogg = join5(work, "audio.ogg");
-  if (existsSync(ogg)) {
-    const covers = item.duration === null || await coversDuration(ogg, item.duration, d.run);
-    const fits = !provider || provider.maxBytes === null || statSync(ogg).size <= provider.maxBytes;
-    if (!covers || !fits)
-      await rm2(ogg, { force: true });
+  const ogg = join7(work, "audio.ogg");
+  if (existsSync(ogg) && item.duration !== null && !await coversDuration(ogg, item.duration, d.run)) {
+    await rm5(ogg, { force: true });
   }
   if (!existsSync(ogg)) {
-    const src = await getAudio();
-    await compressAudio(src, ogg, d.run, kbps);
-    if (!provider) {
-      const real = await probeDuration(ogg, d.run);
-      const better = bitrateFor(real, d.cfg.bitrate, targetBytes(providers));
-      rate = Math.min(better, kbps);
-      if (better < kbps)
-        await compressAudio(src, ogg, d.run, better);
-      durationSec = real;
-      provider = pick(real, rate);
-    }
-    for (const f of await readdir3(work))
+    await compressAudio(await getAudio(), ogg, d.run);
+    for (const f of await readdir4(work))
       if (f.startsWith("src."))
-        await rm2(join5(work, f), { force: true });
+        await rm5(join7(work, f), { force: true });
   }
-  if (durationSec === null)
-    durationSec = await probeDuration(ogg, d.run);
-  if (!provider)
-    provider = pick(durationSec);
+  const durationSec = item.duration ?? await probeDuration(ogg, d.run);
+  provider ??= pick(durationSec);
   const failed = [];
   const tried = new Set;
-  const size = statSync(ogg).size;
   for (;; ) {
     tried.add(provider.name);
-    if (provider.maxBytes !== null && size > provider.maxBytes) {
-      failed.push(`${provider.name}: compressed audio is ${size} bytes, over the file limit ${provider.maxBytes}`);
-    } else {
-      try {
-        const opts = { language: primaryLang(item.language), diarize: flags.diarize };
-        return { asr: await transcribeWith(provider, ogg, opts, d.fetch, d.env, d.home), failed };
-      } catch (e) {
-        failed.push(e.message);
+    try {
+      const asr = await transcribeWith(provider, ogg, { language, diarize: flags.diarize }, d);
+      if (provider.type === "local" && asr.device && asr.elapsedMs !== undefined) {
+        await noteSpeed(speedFile, speedKey(provider, asr.device), durationSec, asr.elapsedMs);
       }
+      return { asr, failed: [...failed, ...asr.notes ?? []] };
+    } catch (e) {
+      failed.push(e.message);
     }
     const rest = candidates.filter((c) => !tried.has(c.provider.name));
-    const next = chooseProvider({ candidates: rest, durationSec, kbps: rate, privateSource: item.privateSource, allowCloud: flags.allowCloud });
+    const next = select(rest, durationSec);
     if ("error" in next) {
       const why = rest.length ? `; no other provider fits: ${next.error.replace(/^no ASR provider fits: /, "")}` : "";
       throw new UserError(`speech recognition failed: ${failed.join("; ")}${why}`);
     }
     provider = next.provider;
   }
+}
+async function noteSpeed(file, key, durationSec, elapsedMs) {
+  if (!(elapsedMs > 0) || !(durationSec > 0))
+    return;
+  try {
+    await recordSpeed(file, key, durationSec / (elapsedMs / 1000));
+  } catch {}
 }
 var looksLikeLink = (s) => /^[a-z0-9-]+(\.[a-z0-9-]+)+\/\S*/i.test(s);
 async function fetchCmd(input, flags, d) {
@@ -1224,8 +1565,7 @@ async function fetchCmd(input, flags, d) {
       upload_date: vm.upload_date,
       duration: vm.duration,
       language: vm.language,
-      thumbnail: vm.thumbnail ?? null,
-      privateSource: vm.extractor_key === "Generic"
+      thumbnail: vm.thumbnail ?? null
     };
     const manual = pickManualTrack(vm);
     const auto = !manual && d.cfg.subtitles === "manual+auto" ? pickAutoTrack(vm) : null;
@@ -1264,7 +1604,7 @@ async function fetchCmd(input, flags, d) {
     }
     item = {
       sourceKey: `file:${abs}`,
-      title: basename2(abs, extname2(abs)),
+      title: basename3(abs, extname2(abs)),
       url: null,
       path: abs,
       id: null,
@@ -1272,8 +1612,7 @@ async function fetchCmd(input, flags, d) {
       upload_date: null,
       duration: await probeDuration(abs, d.run),
       language: null,
-      thumbnail: null,
-      privateSource: true
+      thumbnail: null
     };
     get = async (work) => {
       const lang = d.cfg.summaryLanguage === "auto" ? null : d.cfg.summaryLanguage;
@@ -1287,18 +1626,18 @@ async function fetchCmd(input, flags, d) {
   const dir = await resolveItemDir(expandHome(d.cfg.outputDir, d.home), item.sourceKey, item.title, d.now);
   const prev = await readMeta(dir);
   if (!prev)
-    await writeFile3(join5(dir, "meta.json"), JSON.stringify({ source_key: item.sourceKey }) + `
+    await writeFile4(join7(dir, "meta.json"), JSON.stringify({ source_key: item.sourceKey }) + `
 `);
-  const transcriptPath = join5(dir, "transcript.md");
-  const summaryPath = join5(dir, "summary.md");
+  const transcriptPath = join7(dir, "transcript.md");
+  const summaryPath = join7(dir, "summary.md");
   if (prev?.source && existsSync(transcriptPath) && !flags.force)
     return toResult(prev, dir, transcriptPath, summaryPath);
-  const work = join5(dir, ".work");
-  await mkdir3(work, { recursive: true });
+  const work = join7(dir, ".work");
+  await mkdir5(work, { recursive: true });
   const got = await get(work);
-  await rm2(work, { recursive: true, force: true });
+  await rm5(work, { recursive: true, force: true });
   const transcript = renderTranscript(item.title, toParagraphs(cleanCues(got.cues)));
-  await writeFile3(transcriptPath, transcript);
+  await writeFile4(transcriptPath, transcript);
   const meta = {
     source_key: item.sourceKey,
     source: got.source,
@@ -1341,9 +1680,9 @@ function toResult(meta, dir, transcriptPath, summaryPath) {
 }
 
 // src/readeck.ts
-import { createHash } from "node:crypto";
-import { readFile as readFile6, stat as stat2 } from "node:fs/promises";
-import { join as join7 } from "node:path";
+import { createHash as createHash2 } from "node:crypto";
+import { readFile as readFile7, stat as stat3 } from "node:fs/promises";
+import { join as join9 } from "node:path";
 
 // node_modules/marked/lib/marked.esm.js
 function I() {
@@ -2772,9 +3111,9 @@ var Rn = T.parse;
 var Tn = R.lex;
 
 // src/cover.ts
-import { access as access2, mkdtemp, readFile as readFile5, rm as rm3, stat } from "node:fs/promises";
+import { access as access2, mkdtemp as mkdtemp2, readFile as readFile6, rm as rm6, stat as stat2 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join as join6 } from "node:path";
+import { join as join8 } from "node:path";
 var SCAN_SECONDS = "60";
 var MIN_LUMA = "24";
 var SCALE = "scale='min(1280,iw)':-2";
@@ -2789,9 +3128,9 @@ async function coverFor(meta, run) {
   const exists = await access2(meta.path).then(() => true, () => false);
   if (!exists)
     return null;
-  const work = await mkdtemp(join6(tmpdir(), "vs-cover-"));
+  const work = await mkdtemp2(join8(tmpdir(), "vs-cover-"));
   try {
-    const out = join6(work, "cover.jpg");
+    const out = join8(work, "cover.jpg");
     const nonBlack = `signalstats,metadata=select:key=lavfi.signalstats.YAVG:value=${MIN_LUMA}:function=greater,${SCALE}`;
     for (const vf of [nonBlack, SCALE]) {
       await run([
@@ -2812,13 +3151,13 @@ async function coverFor(meta, run) {
         "3",
         out
       ]);
-      const size = await stat(out).then((s) => s.size, () => 0);
+      const size = await stat2(out).then((s) => s.size, () => 0);
       if (size > 0)
-        return { src: `data:image/jpeg;base64,${(await readFile5(out)).toString("base64")}`, remote: false };
+        return { src: `data:image/jpeg;base64,${(await readFile6(out)).toString("base64")}`, remote: false };
     }
     return null;
   } finally {
-    await rm3(work, { recursive: true, force: true });
+    await rm6(work, { recursive: true, force: true });
   }
 }
 
@@ -2853,8 +3192,8 @@ async function sendToReadeck(dir, d) {
   if (!d.readeck)
     return { status: "disabled", bookmark_id: null };
   const rd = d.readeck;
-  const summaryPath = join7(dir, "summary.md");
-  const exists = await stat2(summaryPath).then(() => true, () => false);
+  const summaryPath = join9(dir, "summary.md");
+  const exists = await stat3(summaryPath).then(() => true, () => false);
   if (!exists)
     throw new UserError(`write summary.md first in ${dir}`);
   const meta = await readMeta(dir);
@@ -2873,8 +3212,8 @@ async function sendToReadeck(dir, d) {
       throw new NetError(netErrorTag(e));
     }
   };
-  const markdown = await readFile6(summaryPath, "utf8");
-  const sha = createHash("sha256").update(markdown).digest("hex");
+  const markdown = await readFile7(summaryPath, "utf8");
+  const sha = createHash2("sha256").update(markdown).digest("hex");
   let replaced = null;
   try {
     const old = meta.readeck_bookmark_id;
@@ -2947,8 +3286,8 @@ async function sendToReadeck(dir, d) {
 }
 
 // src/summary.ts
-import { readFile as readFile7, writeFile as writeFile4 } from "node:fs/promises";
-import { join as join8 } from "node:path";
+import { readFile as readFile8, writeFile as writeFile5 } from "node:fs/promises";
+import { join as join10 } from "node:path";
 var WPM = 200;
 var PLACEHOLDER = "{{reading_time}}";
 function stripFences(md) {
@@ -2992,10 +3331,10 @@ function applyReadingTime(markdown) {
 `);
 }
 async function finalizeSummary(dir) {
-  const path = join8(dir, "summary.md");
+  const path = join10(dir, "summary.md");
   let text;
   try {
-    text = await readFile7(path, "utf8");
+    text = await readFile8(path, "utf8");
   } catch (e) {
     if (e.code === "ENOENT")
       throw new UserError(`write summary.md first in ${dir}`);
@@ -3003,12 +3342,12 @@ async function finalizeSummary(dir) {
   }
   const next = applyReadingTime(text);
   if (next !== text)
-    await writeFile4(path, next);
+    await writeFile5(path, next);
   return { reading_minutes: readingMinutes(text) };
 }
 
 // src/cli.ts
-var USAGE = "usage: video-summary check | config path|get [key]|init [--force]|set <key> <json>|limits | " + "fetch <url|path> [--no-diarize] [--allow-cloud] [--force] | finalize <dir> | readeck <dir>";
+var USAGE = "usage: video-summary check | config path|get [key]|init [--force]|set <key> <json> | " + "fetch <url|path> [--no-diarize] [--force] [--accept-slow] | finalize <dir> | readeck <dir> | local install|status";
 var NO_CONFIG = "no config — run setup (see references/setup.md)";
 async function requireConfig(path) {
   const cfg = await loadConfig(path);
@@ -3018,23 +3357,29 @@ async function requireConfig(path) {
 }
 async function check(d, path) {
   const depsReport = buildReport(await probeDeps(d.run), d.platform, d.runtime, d.now, d.has);
-  const config = { path, exists: false, valid: false };
+  const config = { path, exists: false, valid: false, warnings: [] };
   let cfg = null;
   try {
-    cfg = await loadConfig(path);
+    cfg = await loadConfig(path, config.warnings);
     config.exists = cfg !== null;
     config.valid = cfg !== null;
   } catch (e) {
     if (!(e instanceof UserError))
       throw e;
-    config.exists = await stat3(path).then(() => true, () => false);
+    config.exists = await stat4(path).then(() => true, () => false);
     config.error = e.message;
   }
-  const providers = cfg ? (await probeProviders(cfg.providers.map(resolveProvider), d.fetch, d.env, d.home)).map((c) => ({
+  const resolved = cfg ? cfg.providers.map(resolveProvider) : [];
+  const local = resolved.some((p) => p.type === "local") ? localStatus(d) : undefined;
+  if (local) {
+    depsReport.missing.push(...localMissing(local));
+    depsReport.ok = depsOk(depsReport.missing);
+  }
+  const providers = (await probeProviders(resolved, d.fetch, d.env, d.home, local)).map((c) => ({
     name: c.provider.name,
     available: c.available,
     keyMissing: c.keyMissing
-  })) : [];
+  }));
   return {
     ok: depsReport.ok && config.exists && config.valid,
     runtime: d.runtime,
@@ -3071,7 +3416,7 @@ async function configCmd(args, d, path) {
       return { value: v };
     }
     case "init": {
-      const exists = await stat3(path).then(() => true, () => false);
+      const exists = await stat4(path).then(() => true, () => false);
       if (exists && !rest.includes("--force"))
         throw new UserError(`config exists: ${path} (use --force to overwrite)`);
       await saveConfig(path, DEFAULT_CONFIG);
@@ -3084,10 +3429,6 @@ async function configCmd(args, d, path) {
       const next = setValue(cfg, rest[0], parseValue(rest[0], rest[1]));
       await saveConfig(path, next);
       return { path, key: rest[0] };
-    }
-    case "limits": {
-      const cfg = await requireConfig(path);
-      return { bitrate: cfg.bitrate, rows: limitsReport(cfg.providers.map(resolveProvider)) };
     }
     default:
       throw new UserError(USAGE);
@@ -3108,10 +3449,22 @@ async function main(argv, d) {
       const cfg = await requireConfig(path);
       const flags = {
         diarize: !rest.includes("--no-diarize"),
-        allowCloud: rest.includes("--allow-cloud"),
-        force: rest.includes("--force")
+        force: rest.includes("--force"),
+        acceptSlow: rest.includes("--accept-slow")
       };
-      return fetchCmd(src, flags, { run: d.run, fetch: d.fetch, cfg, env: d.env, now: d.now, cwd: d.cwd, home: d.home });
+      return fetchCmd(src, flags, {
+        run: d.run,
+        fetch: d.fetch,
+        cfg,
+        env: d.env,
+        now: d.now,
+        cwd: d.cwd,
+        home: d.home,
+        platform: d.platform,
+        arch: d.arch,
+        exists: d.exists,
+        has: d.has
+      });
     }
     case "finalize": {
       if (!rest[0])
@@ -3124,6 +3477,13 @@ async function main(argv, d) {
       const cfg = await requireConfig(path);
       return sendToReadeck(resolveInputPath(rest[0], d.cwd, d.home), { readeck: cfg.readeck, fetch: d.fetch, env: d.env, home: d.home, run: d.run });
     }
+    case "local": {
+      if (rest[0] === "install")
+        return localInstall(d);
+      if (rest[0] === "status")
+        return localStatus(d);
+      throw new UserError(USAGE);
+    }
     default:
       throw new UserError(USAGE);
   }
@@ -3132,23 +3492,53 @@ async function main(argv, d) {
 // src/exec.ts
 import { spawn } from "node:child_process";
 import { accessSync, constants } from "node:fs";
-import { delimiter, join as join9 } from "node:path";
+import { delimiter, join as join11 } from "node:path";
 var run = (cmd, opts) => new Promise((resolve) => {
   const [bin, ...args] = cmd;
-  const child = spawn(bin, args, { cwd: opts?.cwd, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(bin, args, {
+    cwd: opts?.cwd,
+    env: { ...process.env, ...opts?.env },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
   let stdout = "";
   let stderr = "";
+  let timedOut = false;
+  let termTimer;
+  let killTimer;
+  if (opts?.timeoutMs !== undefined) {
+    termTimer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      killTimer = setTimeout(() => child.kill("SIGKILL"), 5000);
+    }, opts.timeoutMs);
+  }
+  const clearTimers = () => {
+    clearTimeout(termTimer);
+    clearTimeout(killTimer);
+  };
   child.stdout.setEncoding("utf8").on("data", (d) => stdout += d);
   child.stderr.setEncoding("utf8").on("data", (d) => stderr += d);
-  child.on("error", (e) => resolve({ code: 127, stdout: "", stderr: `${bin}: ${e.message}` }));
-  child.on("close", (code) => resolve({ code: code ?? 1, stdout, stderr }));
+  child.on("error", (e) => {
+    clearTimers();
+    resolve({ code: 127, stdout: "", stderr: `${bin}: ${e.message}` });
+  });
+  child.on("close", (code) => {
+    clearTimers();
+    if (timedOut) {
+      const secs = (opts?.timeoutMs ?? 0) / 1000;
+      resolve({ code: 124, stdout, stderr: `${stderr}
+timed out after ${secs} s` });
+    } else {
+      resolve({ code: code ?? 1, stdout, stderr });
+    }
+  });
 });
 function has(bin) {
   for (const dir of (process.env.PATH ?? "").split(delimiter)) {
     if (!dir)
       continue;
     try {
-      accessSync(join9(dir, bin), constants.X_OK);
+      accessSync(join11(dir, bin), constants.X_OK);
       return true;
     } catch {}
   }
@@ -3165,8 +3555,10 @@ try {
     cwd: process.cwd(),
     now: new Date,
     platform: process.platform === "darwin" ? "darwin" : "linux",
+    arch: process.arch === "arm64" ? "arm64" : "x64",
     runtime: process.versions.bun ? { name: "bun", version: process.versions.bun } : { name: "node", version: process.versions.node },
-    has
+    has,
+    exists: existsSync2
   });
   console.log(JSON.stringify(out, null, 2));
 } catch (e) {

@@ -49,7 +49,7 @@ Rules:
   - `source` is `youtube-manual-subs`, `manual-subs` or `sidecar-subs`: manual subtitles;
   - `youtube-auto-subs`: auto captions (may contain errors);
   - `asr`: recognition, naming the provider from `asr_provider`, plus whether
-    speakers are labeled (`diarized`), e.g. "recognition (groq, no speaker labels)".
+    speakers are labeled (`diarized`), e.g. "recognition (local, no speaker labels)".
   Write the line in the summary language.
 - "Participants" line only when `diarized: true`.
 - Timecode links only for YouTube: `<meta.url>&t=<seconds>s` (`meta.url` is always

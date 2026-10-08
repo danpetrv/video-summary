@@ -12,25 +12,41 @@ Launcher: `sh <skill-dir>/scripts/video-summary`. Config file: `config path`.
 ## Questions
 
 1. **Output folder** for summaries and transcripts. Default `~/Documents/video-summaries`.
-2. **Speech recognition providers**, in priority order (first suitable one wins, the
-   next is a fallback). Offer: a self-hosted whisperx-asr-service, Groq (free tier works),
-   OpenAI, any OpenAI-compatible endpoint (speaches, faster-whisper-server, ...), or none.
-   Fields to ask per provider:
-   - `whisperx`: `name`, `url`, optional key (`keyFile`/`keyEnv`). Runs locally by default
-     and diarizes (speaker labels).
-   - Groq: `name`, `tier` (`free` or `dev`), key. Preset `groq`.
-   - OpenAI: `name`, key, `diarize` yes/no (speaker labels via `gpt-4o-transcribe-diarize`).
-     Preset `openai`.
-   - Own endpoint: `name`, `url` (ends with `/v1`), `model`, optional key, `local: true`
-     if it is on the user's machine or network.
-   See `providers.md` for presets and endpoint details.
-3. **Keys**, if a provider needs one. Never ask for the key in chat and never accept
-   it pasted into chat. Use one of:
+2. **Speech recognition**: used when a video has no subtitles. Providers are tried in
+   priority order (the first suitable one wins, the next is a fallback). Offer in this
+   order:
+   1. **Recommended: local recognition** on this machine. Tell the user: no keys and no
+      server, the audio never leaves the machine; it needs a one-time download of about
+      0.9 GB (the Parakeet Ultra model plus small parakeet.cpp binaries); it knows 25
+      European languages (including English, Russian and Ukrainian; list in
+      `providers.md`) and gives no speaker labels; it runs on the GPU (Metal on Apple
+      Silicon, Vulkan on Linux) or on the CPU, where a long video takes a while. On "yes"
+      run `local install` (in the background: on a slow connection the download can
+      outlast the 10-minute Bash limit; a re-run skips what is already in place), then
+      `config set providers '[{"name":"local","type":"local"}]'`.
+      On Linux, if `nvidia-smi` exists but `local status` shows `vulkan_lib: false` (it
+      then carries a `hint`), the GPU is not used: suggest that the user runs
+      `! sudo apt install libvulkan1`, then run `local install` again (it adds the Vulkan
+      build). This is optional; if the user declines, recognition stays on the CPU.
+   2. **Own server**, only if the user brings it up: a whisperx-asr-service instance
+      (`type: whisperx`: `name`, `url`, optional key; gives speaker labels) or an
+      OpenAI-compatible server such as speaches or faster-whisper-server
+      (`type: openai-compatible`: `name`, `url` ending in `/v1`, `model`, optional key).
+      It can go before or after the local provider: with the server first, local
+      recognition is the fallback when the server is down. See `providers.md`.
+   3. **Only on Linux with both `nvidia-smi` and `docker`** (`command -v nvidia-smi docker`):
+      mention [whisperx-asr-service](https://github.com/murtaza-nasir/whisperx-asr-service)
+      as an option with speaker labels. The user installs it themselves; you only give the
+      link, and add it as a `whisperx` provider once it runs.
+
+   The user may also choose none: then only subtitles are used.
+3. **Keys**, only for an own server that requires one. Never ask for the key in chat and
+   never accept it pasted into chat. Use one of:
    - a key file: ask the user to run this (replace `<name>`), type the key, press Enter:
      `! mkdir -p ~/.config/video-summary && read -rs k && [ -n "$k" ] && (umask 077; printf %s "$k" > ~/.config/video-summary/<name>.key) && chmod 600 ~/.config/video-summary/<name>.key && echo "key saved" || echo "key NOT saved (empty input or no terminal)"`
      The file is created with mode 0600 (subshell `umask 077`) and an empty read writes
      nothing. Put `"keyFile": "~/.config/video-summary/<name>.key"` in the provider.
-   - an environment variable the user exports themselves: `"keyEnv": "GROQ_API_KEY"`.
+   - an environment variable the user exports themselves: `"keyEnv": "ASR_API_KEY"`.
      The agent runs the CLI from a non-interactive shell, so export the variable where
      such shells see it: `~/.zshenv` (zsh) or `~/.profile` (bash/sh), not only
      `~/.zshrc`. Then restart the agent so it inherits the variable.
@@ -39,21 +55,15 @@ Launcher: `sh <skill-dir>/scripts/video-summary`. Config file: `config path`.
    **Verify:** after the user says it is done, run `check` and confirm that provider shows
    `keyMissing: null`. If not, the key was not saved (or the variable is not exported
    to this session): repeat via a fallback. The config itself never contains a key.
-4. **Bitrate and length limit.** After writing the providers run `config limits`: it
-   shows the maximum video length per provider with `adaptive` bitrate (quality drops
-   to fit the file limit on long videos) and with `fixed` 32k. Name the limit to the
-   user, e.g. "Groq free: about 1 h 56 min adaptive, 1 h 40 min fixed", and let them
-   pick `bitrate` (`adaptive` default, or `fixed`). Longer videos are refused with a
-   clear message: there is no chunking.
-5. **Auto captions** (`subtitles`: `manual` default, or `manual+auto`). If there are no
+4. **Auto captions** (`subtitles`: `manual` default, or `manual+auto`). If there are no
    providers, offer `manual+auto` (YouTube auto captions, may contain errors); otherwise
    keep `manual`.
-6. **Summary language** (`summaryLanguage`): `auto` (the language the user writes to you
+5. **Summary language** (`summaryLanguage`): `auto` (the language the user writes to you
    in) or a code such as `ru`, `en`.
-7. **Summary size** (`summaryLength`): `short` (TL;DR and key ideas), `medium` (default,
+6. **Summary size** (`summaryLength`): `short` (TL;DR and key ideas), `medium` (default,
    the full template), `long` (in depth) or `<N>m`, a target reading time of 1-60
    minutes. It is the default: a size in the request overrides it.
-8. **Readeck** (optional): URL and a key file (same key-file command, file
+7. **Readeck** (optional): URL and a key file (same key-file command, file
    `~/.config/video-summary/readeck.key`). Skip if the user does not use it; to turn an
    existing Readeck export off later: `config set readeck null`.
 
@@ -65,8 +75,8 @@ sh <skill-dir>/scripts/video-summary config set outputDir '"~/Documents/video-su
 sh <skill-dir>/scripts/video-summary config set summaryLanguage '"auto"'
 sh <skill-dir>/scripts/video-summary config set summaryLength '"medium"'
 sh <skill-dir>/scripts/video-summary config set subtitles '"manual"'
-sh <skill-dir>/scripts/video-summary config set bitrate '"adaptive"'
-sh <skill-dir>/scripts/video-summary config set providers '[{"name":"groq","type":"openai-compatible","preset":"groq","tier":"free","keyFile":"~/.config/video-summary/groq.key"}]'
+sh <skill-dir>/scripts/video-summary local install        # ~0.9 GB, once
+sh <skill-dir>/scripts/video-summary config set providers '[{"name":"local","type":"local"}]'
 sh <skill-dir>/scripts/video-summary config set readeck '{"url":"https://read.example","keyFile":"~/.config/video-summary/readeck.key"}'
 ```
 
@@ -78,5 +88,6 @@ reads it back.
 
 ## Finish
 
-Run `check`: every provider should show as reachable with a key, and `ok: true`.
+Run `check`: every provider should show as available (a server reachable, the local
+engine installed) with no `keyMissing`, and `ok: true`.
 Fix what it reports, then continue with the user's video.

@@ -1,74 +1,81 @@
 # Providers
 
-Providers are tried in config order; the first that is available, has a key, fits the
-video length and file size, and is allowed by the privacy rule is used. If a provider
-fails in the middle of recognition (HTTP error, rate limit, network error, timeout), the
-next one that fits by the same rules is tried; a cloud provider still needs
-`--allow-cloud` for a local file. `fetch` lists the failed ones in `asr_failed`.
+Speech recognition runs on the user's own machines: on this one (`local`) or on the
+user's own server (`whisperx`, `openai-compatible`). Providers are tried in config order;
+the first that is available, has a key if it needs one, and accepts the video is used. If
+a provider fails in the middle of recognition (HTTP error, network error, timeout, the
+local engine crashing), the next one that fits is tried. `fetch` lists the failed ones in
+`asr_failed`.
 
-## Presets (`type: openai-compatible`)
+| type | where | speaker labels | key |
+|---|---|---|---|
+| `local` | this machine, Parakeet Ultra via parakeet.cpp | no | none |
+| `whisperx` | own whisperx-asr-service | yes | optional |
+| `openai-compatible` | own OpenAI-compatible server | no | optional |
 
-Any field of a preset can be overridden in the config.
+Cloud providers (the `groq` and `openai` presets) were removed in v0.4.0. An old config
+still loads: such providers are skipped and removed settings (`bitrate`, `tier`,
+`maxBytes`, `maxSeconds`, `local`) are ignored, each with a line in `check`'s
+`config.warnings`. Any `config set` saves the cleaned config.
 
-| preset | url | model | format | file limit | duration limit |
-|---|---|---|---|---|---|
-| `groq`, tier `free` | `https://api.groq.com/openai/v1` | `whisper-large-v3-turbo` | `verbose_json` | 25 MB | 7000 s |
-| `groq`, tier `dev` | same | same | `verbose_json` | 100 MB | none |
-| `openai` | `https://api.openai.com/v1` | `whisper-1` | `verbose_json` | 25 MB | none |
-| `openai`, `diarize: true` (experimental) | same | `gpt-4o-transcribe-diarize` | `diarized_json`, `chunking_strategy=auto` | 25 MB | not verified |
-| no preset | `url` required | `model` required | `verbose_json` | none | none |
+## local
 
-MB is decimal (25 MB = 25,000,000 bytes). Presets are cloud (`local: false`); a custom
-endpoint is cloud unless it has `local: true`. HTTP 429 is reported with the limit text
-and is not retried.
+```json
+{ "name": "local", "type": "local" }
+```
 
-The OpenAI diarized preset is **experimental**: its duration limit has not been verified
-and there was no live test against the OpenAI API, so long recordings may be rejected
-by the API. Keep a fallback provider after it.
+Optional fields: `"device": "cpu"` forces the CPU even when a GPU build is installed
+(default `"auto"`); `engine` (`"parakeet"`) and `model` (`"ultra"`) have one value each.
 
-## Maximum video length
+- **Install:** `local install` downloads pinned parakeet.cpp binaries and the Parakeet
+  Ultra model (~0.9 GB), checks their sha256 and is safe to re-run. `local status` reports
+  what is installed (no network). `check` lists `parakeet` in `deps.missing` until it is
+  installed.
+- **Device:** Apple Silicon uses Metal; Linux uses Vulkan when `libvulkan.so.1` is present
+  (`libvulkan1` package; `check` suggests it when `nvidia-smi` exists), otherwise the
+  CPU; Intel Macs use the CPU. If the GPU run fails (other than by timing out), the same audio is recognized on the
+  CPU and `asr_failed` carries a note such as `local: GPU run failed (...), used CPU`.
+- **Languages:** 25 European languages: bg, hr, cs, da, nl, en, et, fi, fr, de, el, hu,
+  it, lv, lt, mt, pl, pt, ro, sk, sl, es, sv, ru, uk. If the video's language is known
+  and not in this list, the local provider is skipped with `language <code> not
+  supported`. A local file has no known language and is tried.
+- **Slow runs:** before downloading (when the length is known), the run time is estimated from the video length and
+  the speed measured on this machine (stored in
+  `${XDG_STATE_HOME:-~/.local/state}/video-summary/speed.json`; until the first run:
+  8x real time on CPU, 60x on GPU). Over 10 minutes the provider is skipped with
+  `~<N> min on CPU|GPU (measured speed <S>x); add --accept-slow to wait`; `fetch
+  --accept-slow` runs it anyway. One run is stopped after 2 hours.
+- No speaker labels: `diarized` is `false`.
 
-`min(duration limit, 96% of file limit * 8 / bitrate)`. Audio is compressed to mono
-16 kHz opus: `fixed` is 32 kbps; `adaptive` picks 16-32 kbps so the file fits 96% of the
-smallest file limit among cloud providers in the config. The 4% headroom is also kept
-when a provider is chosen, because the real opus size drifts a little from the bitrate.
-Groq free: about 1 h 56 min adaptive (the 7000 s limit), 1 h 40 min fixed (6000 s).
-`config limits` prints the numbers for the current config. Longer videos are refused;
-there is no chunking.
-
-## Diarization (speaker labels)
-
-- whisperx: on by default, `--no-diarize` turns it off.
-- OpenAI: only with `diarize: true` (model `gpt-4o-transcribe-diarize`, experimental).
-  `--no-diarize` does not change this preset: it still uses the diarized model.
-- Groq and generic endpoints: no speaker labels.
-
-Labels come out as `Speaker N`.
+Files: binaries in `${XDG_DATA_HOME:-~/.local/share}/video-summary/parakeet/`, the
+model in `${XDG_CACHE_HOME:-~/.cache}/video-summary/models/`.
 
 ## whisperx
 
-`type: whisperx`, `url` of a whisperx-asr-service instance.
-The CLI calls `POST {url}/asr` and checks `GET {url}/health`. Local by default
-(`local: true`), so it is allowed for any file; if the server is not yours (someone
-else's or a cloud host), set `"local": false` so private files need `--allow-cloud`.
-Optional key sent as `Authorization: Bearer`.
+```json
+{ "name": "home-whisperx", "type": "whisperx", "url": "https://asr.example" }
+```
 
-## Your own OpenAI-compatible endpoint
+`url` of a [whisperx-asr-service](https://github.com/murtaza-nasir/whisperx-asr-service)
+instance. The CLI calls `POST {url}/asr` and checks `GET {url}/health`. Speaker labels
+are on by default (`"diarize": false` in the config or `fetch --no-diarize` turns them
+off) and come out as `Speaker N`. Optional key (`keyFile`/`keyEnv`) sent as
+`Authorization: Bearer`.
+
+## Your own OpenAI-compatible server
 
 ```json
-{ "name": "local", "type": "openai-compatible", "url": "http://localhost:8000/v1",
-  "model": "Systran/faster-whisper-large-v3", "local": true }
+{ "name": "speaches", "type": "openai-compatible", "url": "http://localhost:8000/v1",
+  "model": "Systran/faster-whisper-large-v3" }
 ```
 
 - **speaches** and **faster-whisper-server**: `url` is `http://<host>:<port>/v1`
-  (the CLI appends `/audio/transcriptions`), `model` is the Hugging Face id the server
-  has loaded, e.g. `Systran/faster-whisper-large-v3`. A `local: true` endpoint is
-  checked with `GET {url}/models` before use.
+  (the CLI appends `/audio/transcriptions` and asks for `verbose_json`), `model` is the
+  Hugging Face id the server has loaded, e.g. `Systran/faster-whisper-large-v3`. The
+  server is checked with `GET {url}/models` before use.
+- Optional key (`keyFile`/`keyEnv`) sent as `Authorization: Bearer`.
+- No speaker labels.
 - whisperx-asr-service: use `type: whisperx`, not this type.
 
-## Privacy rule
-
-A cloud provider receives the extracted audio. A local file, or a link whose site is
-unknown to yt-dlp (generic extractor), goes to a cloud provider only with
-`--allow-cloud`, which you add only on the user's explicit permission. Local providers
-(`local: true`, whisperx) never need it.
+The skill does not check where `url` points: it is meant for a server you run. Audio is
+uploaded as mono 16 kHz opus at 32 kbps (about 14 MB per hour).
