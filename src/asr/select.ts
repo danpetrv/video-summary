@@ -7,10 +7,13 @@ import { transcribeWhisperx, whisperxHealthy } from "./whisperx";
 
 export type Candidate = { provider: ResolvedProvider; available: boolean; keyMissing: string | null };
 
+/** `local`: install status of the local engine (`localStatus`); without it a local provider is unavailable. */
 export async function probeProviders(
   ps: ResolvedProvider[], f: Fetcher, env: Record<string, string | undefined>, home: string,
+  local?: { installed: boolean },
 ): Promise<Candidate[]> {
-  return Promise.all(ps.map(async (provider) => {
+  return Promise.all(ps.map(async (provider): Promise<Candidate> => {
+    if (provider.type === "local") return { provider, available: local?.installed ?? false, keyMissing: null };
     let key: string | null = null;
     try {
       key = await readKey(provider, env, home);
@@ -36,7 +39,7 @@ export type SelectInput = {
 };
 
 function reject(c: Candidate): string | null {
-  if (!c.available) return "not reachable";
+  if (!c.available) return c.provider.type === "local" ? "local engine not installed — run `local install`" : "not reachable";
   if (c.keyMissing) return `no API key (${c.keyMissing})`;
   return null;
 }
@@ -56,6 +59,8 @@ export async function transcribeWith(
   p: ResolvedProvider, file: string, o: AsrOptions, f: Fetcher,
   env: Record<string, string | undefined>, home: string,
 ): Promise<AsrResult> {
+  // Placeholder until local recognition lands; a UserError, so fetch fails over to the next provider.
+  if (p.type === "local") throw new UserError("local recognition is not implemented yet");
   const key = await readKey(p, env, home);
   return p.type === "whisperx" ? transcribeWhisperx(file, o, p, key, f) : transcribeOpenAI(file, o, p, key, f);
 }

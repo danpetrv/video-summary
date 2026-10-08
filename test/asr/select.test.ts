@@ -4,10 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveProvider, type ResolvedProvider } from "../../src/asr/presets";
 import { type Candidate, chooseProvider, probeProviders, type SelectInput, transcribeWith } from "../../src/asr/select";
-import type { Fetcher } from "../../src/types";
+import { type Fetcher, UserError } from "../../src/types";
 
 const own = resolveProvider({ name: "own", type: "openai-compatible", url: "http://own/v1", model: "m", keyEnv: "OWN_KEY" });
 const wx = resolveProvider({ name: "wx", type: "whisperx", url: "https://wx" });
+const loc = resolveProvider({ name: "local", type: "local", engine: "parakeet", model: "ultra", device: "auto" });
 const ok = (p: ResolvedProvider): Candidate => ({ provider: p, available: true, keyMissing: null });
 const base: Omit<SelectInput, "candidates"> = { durationSec: 5400, language: null, acceptSlow: false, estimate: () => null };
 
@@ -21,6 +22,28 @@ test("chooseProvider: reasons are only availability and key", () => {
   expect(r).toEqual({ error: "no ASR provider fits: wx: not reachable; own: no API key (cannot read file ~/k (EISDIR))" });
   // no duration or size limits any more: a 10-hour recording fits
   expect(chooseProvider({ ...base, durationSec: 36_000, candidates: [ok(own)] })).toEqual({ provider: own });
+});
+
+test("chooseProvider: local not installed -> reason names `local install`; installed -> chosen", () => {
+  const r = chooseProvider({ ...base, candidates: [{ ...ok(loc), available: false }, { ...ok(wx), available: false }] });
+  expect(r).toEqual({ error: "no ASR provider fits: local: local engine not installed — run `local install`; wx: not reachable" });
+  expect(chooseProvider({ ...base, candidates: [ok(loc), ok(wx)] })).toEqual({ provider: loc });
+});
+
+test("probeProviders: local availability comes from the install status, no network, no key", async () => {
+  const f: Fetcher = async (u) => { throw new Error(`local must not be probed over the network: ${u}`); };
+  expect(await probeProviders([loc], f, {}, "/nohome", { installed: true }))
+    .toEqual([{ provider: loc, available: true, keyMissing: null }]);
+  expect(await probeProviders([loc], f, {}, "/nohome", { installed: false }))
+    .toEqual([{ provider: loc, available: false, keyMissing: null }]);
+  expect((await probeProviders([loc], f, {}, "/nohome"))[0]!.available).toBe(false);
+});
+
+test("transcribeWith: local -> UserError (recognition lands in a later change)", async () => {
+  const f: Fetcher = async (u) => { throw new Error(`unexpected ${u}`); };
+  const err = await transcribeWith(loc, "/nonexistent.ogg", { language: null, diarize: false }, f, {}, "/nohome").catch((e) => e);
+  expect(err).toBeInstanceOf(UserError);
+  expect(err.message).toBe("local recognition is not implemented yet");
 });
 
 test("chooseProvider: empty list", () => {

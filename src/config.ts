@@ -4,9 +4,14 @@ import { UserError } from "./types";
 
 export type KeyRef = { keyFile?: string | null; keyEnv?: string | null };
 /** `diarize` is only meaningful for whisperx. */
-export type ProviderConfig = KeyRef & {
+export type RemoteProviderConfig = KeyRef & {
   name: string; type: "whisperx" | "openai-compatible"; url: string; model?: string; diarize?: boolean;
 };
+/** On-device recognition; parsing fills in the defaults, so a parsed config always has all fields. */
+export type LocalProviderConfig = {
+  name: string; type: "local"; engine: "parakeet"; model: "ultra"; device: "auto" | "cpu";
+};
+export type ProviderConfig = RemoteProviderConfig | LocalProviderConfig;
 export type ReadeckConfig = KeyRef & { url: string; label?: string };
 export type Config = {
   outputDir: string; summaryLanguage: string; summaryLength: string; subtitles: "manual" | "manual+auto";
@@ -79,10 +84,43 @@ function checkKeys(o: Record<string, unknown>, allowed: string[], path: string) 
   }
 }
 
+function providerName(raw: Record<string, unknown>, path: string, seen: Set<string>): string {
+  const name = str(raw.name, `${path}.name`);
+  if (seen.has(name)) fail(`${path}.name`, `duplicate "${name}"`);
+  seen.add(name);
+  return name;
+}
+
+const LOCAL_KEYS = ["name", "type", "engine", "model", "device"];
+/** Keys of the other provider types, current and removed: named as such rather than as unknown. */
+const REMOTE_KEYS = ["url", "diarize", "keyFile", "keyEnv", "preset", ...REMOVED_PROVIDER_KEYS];
+
+/** Value of `o[k]` from `allowed`; absent -> the first (default) one. */
+function oneOf<T extends string>(o: Record<string, unknown>, k: string, allowed: readonly T[], path: string): T {
+  const v = o[k];
+  if (v === undefined) return allowed[0] as T;
+  if (!allowed.includes(v as T)) fail(`${path}.${k}`, `must be ${allowed.map((a) => JSON.stringify(a)).join(" or ")}`);
+  return v as T;
+}
+
+/** The local type is new in v0.4.0: no old configs to migrate, so any other field is an error. */
+function parseLocal(raw: Record<string, unknown>, path: string, seen: Set<string>): LocalProviderConfig {
+  for (const k of Object.keys(raw)) {
+    if (!LOCAL_KEYS.includes(k)) fail(`${path}.${k}`, REMOTE_KEYS.includes(k) ? "not allowed for type local" : "unknown key");
+  }
+  return {
+    name: providerName(raw, path, seen), type: "local",
+    engine: oneOf(raw, "engine", ["parakeet"], path),
+    model: oneOf(raw, "model", ["ultra"], path),
+    device: oneOf(raw, "device", ["auto", "cpu"], path),
+  };
+}
+
 /** null = an old cloud preset provider, skipped with a warning. */
 function parseProvider(raw: unknown, i: number, seen: Set<string>, warnings: string[]): ProviderConfig | null {
   const path = `providers[${i}]`;
   if (!isObj(raw)) return fail(path, "must be an object");
+  if (raw.type === "local") return parseLocal(raw, path, seen);
   if (raw.preset !== undefined) {
     const label = typeof raw.name === "string" && raw.name ? `${path} ${JSON.stringify(raw.name)}` : path;
     warnings.push(`${label}: cloud providers were removed in v0.4.0 — skipped`);
@@ -92,15 +130,13 @@ function parseProvider(raw: unknown, i: number, seen: Set<string>, warnings: str
   const legacy = raw.type === "openai-compatible" ? [...REMOVED_PROVIDER_KEYS, "diarize"] : REMOVED_PROVIDER_KEYS;
   for (const k of legacy) if (raw[k] !== undefined) warnings.push(removed(`${path}.${k}`));
   checkKeys(raw, ["name", "type", "url", "model", "diarize", "keyFile", "keyEnv", ...legacy], path);
-  const name = str(raw.name, `${path}.name`);
-  if (seen.has(name)) fail(`${path}.name`, `duplicate "${name}"`);
-  seen.add(name);
+  const name = providerName(raw, path, seen);
   if (raw.type !== "whisperx" && raw.type !== "openai-compatible") {
-    return fail(`${path}.type`, `unknown type ${JSON.stringify(raw.type)} (whisperx, openai-compatible)`);
+    return fail(`${path}.type`, `unknown type ${JSON.stringify(raw.type)} (whisperx, openai-compatible, local)`);
   }
   const url = optStr(raw, "url", path)?.replace(/\/+$/, "");
   if (!url) return fail(`${path}.url`, "required");
-  const p: ProviderConfig = { name, type: raw.type, url, ...keyRef(raw, path) };
+  const p: RemoteProviderConfig = { name, type: raw.type, url, ...keyRef(raw, path) };
   const model = optStr(raw, "model", path);
   if (model) p.model = model;
   else if (p.type === "openai-compatible") fail(`${path}.model`, "required");

@@ -2,7 +2,7 @@ import { openAsBlob } from "node:fs";
 import { normalizeLanguage } from "./language";
 import { oneLine } from "../net";
 import { type Fetcher, UserError } from "../types";
-import type { ResolvedProvider } from "./presets";
+import type { RemoteProvider } from "./presets";
 import { type AsrOptions, type AsrResult, authHeaders, joinUrl, postAsr, primaryLang } from "./types";
 
 type Segment = { start: number; end: number; text: string };
@@ -23,7 +23,7 @@ export function parseVerbose(json: unknown, provider: string): AsrResult {
 }
 
 export async function transcribeOpenAI(
-  file: string, o: AsrOptions, p: ResolvedProvider, key: string | null, f: Fetcher,
+  file: string, o: AsrOptions, p: RemoteProvider, key: string | null, f: Fetcher,
 ): Promise<AsrResult> {
   const lang = primaryLang(o.language);
   const form = new FormData();

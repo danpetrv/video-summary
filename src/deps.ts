@@ -1,6 +1,6 @@
 import type { Platform, Runner } from "./types";
 
-export type DepName = "yt-dlp" | "yt-dlp-ejs" | "ffmpeg" | "ffprobe";
+export type DepName = "yt-dlp" | "yt-dlp-ejs" | "ffmpeg" | "ffprobe" | "parakeet" | "libvulkan1";
 export type DepStatus = { name: DepName; found: boolean; version: string | null };
 export type DepsReport = {
   ok: boolean;
@@ -123,4 +123,16 @@ export function buildReport(
     }
   }
   return { ok: missing.length === 0, platform, runtime, missing, stale };
+}
+
+/** Missing pieces of a configured local provider, from `localStatus`. */
+export function localMissing(s: { installed: boolean; hint?: string }): DepsReport["missing"] {
+  const out: DepsReport["missing"] = [];
+  if (!s.installed) {
+    out.push({ name: "parakeet", install: "sh <skill-dir>/scripts/video-summary local install", needsSudo: false, note: "~0.9 GB download" });
+  }
+  if (s.hint) {
+    out.push({ name: "libvulkan1", install: "sudo apt install libvulkan1", needsSudo: true, note: "enables GPU recognition; run local install again afterwards" });
+  }
+  return out;
 }

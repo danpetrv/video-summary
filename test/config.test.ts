@@ -139,6 +139,38 @@ test("parseConfig: url/model requirements with field paths", () => {
   expect(() => parseConfig({ readeck: { url: "/" } })).toThrow("config: readeck.url: required");
 });
 
+test("local provider: defaults engine parakeet, model ultra, device auto", () => {
+  expect(parseConfig({ providers: [{ name: "local", type: "local" }] }).providers).toEqual([
+    { name: "local", type: "local", engine: "parakeet", model: "ultra", device: "auto" },
+  ]);
+  const full = { name: "l", type: "local", engine: "parakeet", model: "ultra", device: "cpu" } as const;
+  expect(parseConfig({ providers: [full] }).providers).toEqual([full]);
+  // set via `config set providers`, next to a whisperx fallback
+  const c = setValue(DEFAULT_CONFIG, "providers", [{ name: "wx", type: "whisperx", url: "https://a" }, { name: "local", type: "local" }]);
+  expect(c.providers.map((p) => p.type)).toEqual(["whisperx", "local"]);
+});
+
+test("local provider: url/keyFile/diarize/other model -> error with field path", () => {
+  const bad = (extra: object) => () => parseConfig({ providers: [{ name: "l", type: "local", ...extra }] }, []);
+  for (const k of ["url", "keyFile", "keyEnv"]) {
+    expect(bad({ [k]: "x" })).toThrow(`config: providers[0].${k}: not allowed for type local`);
+  }
+  expect(bad({ diarize: true })).toThrow("config: providers[0].diarize: not allowed for type local");
+  // strict: no soft migration for the new type
+  expect(bad({ tier: "free" })).toThrow("config: providers[0].tier: not allowed for type local");
+  expect(bad({ preset: "groq" })).toThrow("config: providers[0].preset: not allowed for type local");
+  expect(bad({ nope: 1 })).toThrow("config: providers[0].nope: unknown key");
+  expect(bad({ model: "large-v3" })).toThrow('config: providers[0].model: must be "ultra"');
+  expect(bad({ engine: "whisper" })).toThrow('config: providers[0].engine: must be "parakeet"');
+  expect(bad({ device: "gpu" })).toThrow('config: providers[0].device: must be "auto" or "cpu"');
+  expect(bad({ device: null })).toThrow('config: providers[0].device: must be "auto" or "cpu"');
+  expect(() => parseConfig({ providers: [{ type: "local" }] })).toThrow("config: providers[0].name: must be a non-empty string");
+  expect(() => parseConfig({ providers: [{ name: "a", type: "whisperx", url: "u" }, { name: "a", type: "local" }] }))
+    .toThrow('config: providers[1].name: duplicate "a"');
+  expect(() => parseConfig({ providers: [{ name: "a", type: "grpc" }] }))
+    .toThrow('config: providers[0].type: unknown type "grpc" (whisperx, openai-compatible, local)');
+});
+
 test("migration: groq/openai presets skipped with a warning, whisperx kept", () => {
   const w: string[] = [];
   const c = parseConfig({ bitrate: "fixed", providers: [

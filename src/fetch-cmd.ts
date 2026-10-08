@@ -7,15 +7,18 @@ import { type AsrResult, primaryLang } from "./asr/types";
 import { compressAudio, probeDuration } from "./audio";
 import { cleanCues, dedupeRolling, parseSrt, parseVtt, renderTranscript, toParagraphs } from "./captions";
 import { type Config, expandHome } from "./config";
+import { localStatus } from "./local/install";
 import { estimateTokens, type Meta, readMeta, type Source, writeMeta } from "./meta";
 import { findSidecarSubs, resolveInputPath, resolveItemDir } from "./paths";
-import { type Cue, type Fetcher, type Runner, UserError } from "./types";
+import { type Cue, type Fetcher, type Platform, type Runner, UserError } from "./types";
 import { downloadAudio, downloadSubs, fetchMeta, pickAutoTrack, pickManualTrack } from "./ytdlp";
 
 export type FetchFlags = { diarize: boolean; force?: boolean; acceptSlow?: boolean };
 export type FetchDeps = {
   run: Runner; fetch: Fetcher; cfg: Config; env: Record<string, string | undefined>;
   now: Date; cwd: string; home: string;
+  // for the local engine's install status
+  platform: Platform; arch: "x64" | "arm64"; exists: (p: string) => boolean; has: (bin: string) => boolean;
 };
 export type FetchResult = {
   dir: string;
@@ -61,7 +64,9 @@ async function readSubs(file: string): Promise<Cue[]> {
 async function recognize(
   getAudio: () => Promise<string>, work: string, item: Item, flags: FetchFlags, d: FetchDeps,
 ): Promise<{ asr: AsrResult; failed: string[] }> {
-  const candidates: Candidate[] = await probeProviders(d.cfg.providers.map(resolveProvider), d.fetch, d.env, d.home);
+  const providers = d.cfg.providers.map(resolveProvider);
+  const local = providers.some((p) => p.type === "local") ? localStatus(d) : undefined;
+  const candidates: Candidate[] = await probeProviders(providers, d.fetch, d.env, d.home, local);
   const language = primaryLang(item.language);
   const select = (cs: Candidate[], durationSec: number) =>
     chooseProvider({ candidates: cs, durationSec, language, acceptSlow: flags.acceptSlow ?? false, estimate: () => null });

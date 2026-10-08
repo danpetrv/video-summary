@@ -1,6 +1,6 @@
 import { stat } from "node:fs/promises";
 import { type Config, DEFAULT_CONFIG, configPath, loadConfig, saveConfig, setValue } from "./config";
-import { type DepsReport, buildReport, probeDeps } from "./deps";
+import { type DepsReport, buildReport, localMissing, probeDeps } from "./deps";
 import { fetchCmd } from "./fetch-cmd";
 import { localInstall, localStatus } from "./local/install";
 import { resolveInputPath } from "./paths";
@@ -41,11 +41,16 @@ async function check(d: CliDeps, path: string): Promise<unknown> {
     config.exists = await stat(path).then(() => true, () => false);
     config.error = e.message;
   }
-  const providers = cfg
-    ? (await probeProviders(cfg.providers.map(resolveProvider), d.fetch, d.env, d.home)).map((c) => ({
-        name: c.provider.name, available: c.available, keyMissing: c.keyMissing,
-      }))
-    : [];
+  const resolved = cfg ? cfg.providers.map(resolveProvider) : [];
+  // The local engine is checked only when a local provider is configured.
+  const local = resolved.some((p) => p.type === "local") ? localStatus(d) : undefined;
+  if (local) {
+    depsReport.missing.push(...localMissing(local));
+    depsReport.ok = depsReport.missing.length === 0;
+  }
+  const providers = (await probeProviders(resolved, d.fetch, d.env, d.home, local)).map((c) => ({
+    name: c.provider.name, available: c.available, keyMissing: c.keyMissing,
+  }));
   return {
     ok: depsReport.ok && config.exists && config.valid,
     runtime: d.runtime, deps: depsReport, config, providers,
@@ -110,7 +115,10 @@ export async function main(argv: string[], d: CliDeps): Promise<unknown> {
       const cfg = await requireConfig(path);
       // --allow-cloud (v0.3 and older SKILL.md) is accepted and ignored, like any other unknown flag.
       const flags = { diarize: !rest.includes("--no-diarize"), force: rest.includes("--force") };
-      return fetchCmd(src, flags, { run: d.run, fetch: d.fetch, cfg, env: d.env, now: d.now, cwd: d.cwd, home: d.home });
+      return fetchCmd(src, flags, {
+        run: d.run, fetch: d.fetch, cfg, env: d.env, now: d.now, cwd: d.cwd, home: d.home,
+        platform: d.platform, arch: d.arch, exists: d.exists, has: d.has,
+      });
     }
     case "finalize": {
       if (!rest[0]) throw new UserError(USAGE);

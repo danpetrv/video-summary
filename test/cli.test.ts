@@ -1,9 +1,11 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type CliDeps, main } from "../src/cli";
 import { DEFAULT_CONFIG } from "../src/config";
+import { localPaths } from "../src/local/paths";
+import { MODEL } from "../src/local/pins";
 import { UserError } from "../src/types";
 
 const root = mkdtempSync(join(tmpdir(), "vs-cli-"));
@@ -69,6 +71,64 @@ test("check with valid config -> ok true, providers probed, readeck configured",
   expect(r.providers).toEqual([{ name: "w", available: false, keyMissing: null }]);
   expect(r.readeck).toBe("configured");
   expect(r.config.warnings).toEqual([]);
+});
+
+const PARAKEET = {
+  name: "parakeet", install: "sh <skill-dir>/scripts/video-summary local install", needsSudo: false, note: "~0.9 GB download",
+};
+const LIBVULKAN = {
+  name: "libvulkan1", install: "sudo apt install libvulkan1", needsSudo: true,
+  note: "enables GPU recognition; run local install again afterwards",
+};
+/** XDG dirs inside the test root; `exists` sees only files there (not the host's libvulkan). */
+function localEnv() {
+  const dir = mkdtempSync(join(root, "local-"));
+  const env = { VIDEO_SUMMARY_CONFIG: cfgFile, XDG_DATA_HOME: join(dir, "data"), XDG_CACHE_HOME: join(dir, "cache") };
+  return { env, exists: (p: string) => p.startsWith(dir) && existsSync(p), paths: localPaths(env, root) };
+}
+/** Installed linux-cpu-x64 build and a model of the pinned size (sparse: no real 0.9 GB on disk). */
+function installLocal(paths: ReturnType<typeof localPaths>) {
+  mkdirSync(paths.binDir("linux-cpu-x64"), { recursive: true });
+  writeFileSync(paths.cli("linux-cpu-x64"), "");
+  mkdirSync(join(paths.model, ".."), { recursive: true });
+  writeFileSync(paths.model, "");
+  truncateSync(paths.model, MODEL.size);
+}
+
+test("check: local configured, not installed -> deps.missing has parakeet with the install command; installed -> provider available", async () => {
+  writeFileSync(cfgFile, JSON.stringify({ providers: [{ name: "local", type: "local" }] }));
+  const { env, exists, paths } = localEnv();
+  const before = (await call(["check"], { env, exists })) as any;
+  expect(before.deps.missing).toEqual([PARAKEET]);
+  expect(before.deps.ok).toBe(false);
+  expect(before.ok).toBe(false);
+  expect(before.providers).toEqual([{ name: "local", available: false, keyMissing: null }]);
+
+  installLocal(paths);
+  const after = (await call(["check"], { env, exists })) as any;
+  expect(after.deps.missing).toEqual([]);
+  expect(after.ok).toBe(true);
+  expect(after.providers).toEqual([{ name: "local", available: true, keyMissing: null }]);
+});
+
+test("check: linux, no libvulkan, nvidia-smi present -> deps.missing has libvulkan1 with needsSudo true", async () => {
+  writeFileSync(cfgFile, JSON.stringify({ providers: [{ name: "local", type: "local" }] }));
+  const { env, exists, paths } = localEnv();
+  installLocal(paths); // the CPU build is enough to count as installed; the GPU build needs the library
+  const r = (await call(["check"], { env, exists, has: (b) => b === "nvidia-smi" })) as any;
+  expect(r.deps.missing).toEqual([LIBVULKAN]);
+  expect(r.providers).toEqual([{ name: "local", available: true, keyMissing: null }]);
+  // no such hint on macOS
+  const mac = (await call(["check"], { env, exists, has: (b) => b === "nvidia-smi", platform: "darwin", arch: "arm64" })) as any;
+  expect(mac.deps.missing.map((m: { name: string }) => m.name)).not.toContain("libvulkan1");
+});
+
+test("check: no local provider -> no parakeet/libvulkan1 items", async () => {
+  writeFileSync(cfgFile, JSON.stringify({ providers: [{ name: "w", type: "whisperx", url: "http://x:1" }] }));
+  const { env, exists } = localEnv();
+  const r = (await call(["check"], { env, exists, has: (b) => b === "nvidia-smi" })) as any;
+  expect(r.deps.missing).toEqual([]);
+  expect(r.deps.ok).toBe(true);
 });
 
 test("config init creates DEFAULT_CONFIG; repeat without --force -> UserError 'config exists'", async () => {

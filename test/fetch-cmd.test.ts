@@ -1,9 +1,11 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Config, type ProviderConfig, DEFAULT_CONFIG } from "../src/config";
 import { type FetchDeps, type FetchFlags, fetchCmd } from "../src/fetch-cmd";
+import { localPaths } from "../src/local/paths";
+import { MODEL } from "../src/local/pins";
 import { readMeta, writeMeta } from "../src/meta";
 import { type Fetcher, type Runner, UserError } from "../src/types";
 
@@ -20,6 +22,7 @@ afterAll(() => rmSync(root, { recursive: true, force: true }));
 const WX: ProviderConfig = { name: "wx", type: "whisperx", url: "http://wx:9000" };
 const OWN_URL = "http://own:8000/v1";
 const OWN: ProviderConfig = { name: "own", type: "openai-compatible", url: OWN_URL, model: "m" };
+const LOCAL: ProviderConfig = { name: "local", type: "local", engine: "parakeet", model: "ultra", device: "auto" };
 
 type Env = {
   meta?: object; health?: number; asrStatus?: number; modelsStatus?: number; ownStatus?: number; oggDuration?: string;
@@ -70,7 +73,10 @@ function deps(env: Env = {}): FetchDeps {
     throw new Error(`unexpected URL ${url}`);
   };
   const cfg: Config = { ...DEFAULT_CONFIG, outputDir: base, providers: env.providers ?? [WX, OWN], ...env.cfg };
-  return { run, fetch, cfg, env: {}, now: new Date(2026, 9, 2, 12), cwd: root, home: root };
+  return {
+    run, fetch, cfg, env: {}, now: new Date(2026, 9, 2, 12), cwd: root, home: root,
+    platform: "linux", arch: "x64", exists: () => false, has: () => false,
+  };
 }
 const flags: FetchFlags = { diarize: true };
 const ownCalled = () => calls.urls.includes(`${OWN_URL}/audio/transcriptions`);
@@ -119,6 +125,29 @@ test("openai-compatible whose /models does not answer is skipped before any down
   expect(err).toBeInstanceOf(UserError);
   expect(err.message).toBe("no ASR provider fits: wx: not reachable; own: not reachable");
   expect(hasFormatDownload()).toBe(false);
+});
+
+test("local provider not installed -> skipped before any download with the `local install` hint", async () => {
+  const err = await fetchCmd(URL1, flags, deps({ meta: noMeta, providers: [LOCAL, WX], health: 502 })).catch((e) => e);
+  expect(err).toBeInstanceOf(UserError);
+  expect(err.message).toBe("no ASR provider fits: local: local engine not installed — run `local install`; wx: not reachable");
+  expect(hasFormatDownload()).toBe(false);
+});
+
+test("local provider installed -> available to fetch (install status comes from the machine)", async () => {
+  const dir = mkdtempSync(join(root, "local-"));
+  const env = { XDG_DATA_HOME: join(dir, "data"), XDG_CACHE_HOME: join(dir, "cache") };
+  const paths = localPaths(env, root);
+  mkdirSync(paths.binDir("linux-cpu-x64"), { recursive: true });
+  writeFileSync(paths.cli("linux-cpu-x64"), "");
+  mkdirSync(join(paths.model, ".."), { recursive: true });
+  writeFileSync(paths.model, "");
+  truncateSync(paths.model, MODEL.size); // sparse
+  const d = { ...deps({ meta: noMeta, providers: [LOCAL, WX] }), env, exists: (p: string) => p.startsWith(dir) && existsSync(p) };
+  const r = await fetchCmd(URL1, flags, d);
+  // local is chosen first; until local recognition exists it fails over to whisperx
+  expect(r.asr_provider).toBe("wx");
+  expect(r.asr_failed).toEqual(["local recognition is not implemented yet"]);
 });
 
 test("local file via ~ with sidecar .srt -> sidecar-subs, no ASR", async () => {

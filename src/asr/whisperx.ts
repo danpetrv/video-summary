@@ -2,7 +2,7 @@ import { openAsBlob } from "node:fs";
 import { normalizeLanguage } from "./language";
 import { oneLine } from "../net";
 import { type Fetcher } from "../types";
-import type { ResolvedProvider } from "./presets";
+import type { RemoteProvider } from "./presets";
 import { type AsrOptions, type AsrResult, authHeaders, joinUrl, postAsr, primaryLang } from "./types";
 
 type Segment = { start: number; end: number; text: string; speaker?: string };
@@ -30,7 +30,7 @@ export function parseWhisperx(json: unknown, provider: string): AsrResult {
 }
 
 export async function transcribeWhisperx(
-  file: string, o: AsrOptions, p: ResolvedProvider, key: string | null, f: Fetcher,
+  file: string, o: AsrOptions, p: RemoteProvider, key: string | null, f: Fetcher,
 ): Promise<AsrResult> {
   const q = new URLSearchParams({ output: "json", diarize: String(o.diarize && p.diarize), word_timestamps: "false" });
   const lang = primaryLang(o.language);
