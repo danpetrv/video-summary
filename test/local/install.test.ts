@@ -161,6 +161,24 @@ test("install: a corrupted model in place (right size, wrong hash) is downloaded
   expect(sha(readFileSync(paths().model))).toBe(sha(modelBytes));
 });
 
+test("install: a corrupted model in place is removed even when the re-download fails; status says not present", async () => {
+  mkdirSync(modelsDir(), { recursive: true });
+  writeFileSync(paths().model, new Uint8Array(modelBytes.length));
+  const d = deps();
+  const fetchOk = d.fetch;
+  d.fetch = async (url, init) => {
+    if (url === MODEL.url) throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNRESET" } });
+    return fetchOk(url, init);
+  };
+  const err = await localInstall(d, fixturePins()).catch((e) => e);
+  expect(err).toBeInstanceOf(UserError);
+  expect(err.message).toBe("could not download ultra-q8_0.gguf: ECONNRESET");
+  expect(readdirSync(modelsDir())).toEqual([]);
+  const s = localStatus(d, fixturePins());
+  expect(s.model).toEqual({ present: false, verified: false, path: paths().model });
+  expect(s.installed).toBe(false);
+});
+
 test("install: concurrent installs end with a complete build dir", async () => {
   const d = deps({ vulkan: true });
   const pins = fixturePins();

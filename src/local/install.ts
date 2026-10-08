@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { createReadStream, statSync } from "node:fs";
+import { type Stats, createReadStream, statSync } from "node:fs";
 import { mkdir, mkdtemp, open, readdir, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { netErrorTag, oneLine } from "../net";
@@ -88,7 +88,11 @@ async function ensureBuild(d: LocalDeps, paths: LocalPaths, build: BuildId, pin:
 /** Re-downloads unless the file is there with the pinned size and sha256; then drops stale `.part` files. */
 async function ensureModel(fetch: Fetcher, path: string, pin: ModelPin): Promise<number> {
   await mkdir(dirname(path), { recursive: true });
-  const bytes = (await matches(path, pin)) ? 0 : await download(fetch, pin.url, path, pin, pin.file);
+  const check = await verify(path, pin);
+  // A bad file goes first: a failed re-download must not leave it for `status` to call verified (size only).
+  // Same inode only, so a verified file a concurrent run has just renamed in is kept.
+  if (check.bad && (await stat(path).catch(() => null))?.ino === check.bad.ino) await rm(path, { force: true });
+  const bytes = check.ok ? 0 : await download(fetch, pin.url, path, pin, pin.file);
   // Leftovers of interrupted runs. A concurrent download whose .part goes too accepts our verified file.
   const prefix = `${basename(path)}.`;
   for (const name of await readdir(dirname(path))) {
@@ -153,12 +157,16 @@ async function download(fetch: Fetcher, url: string, target: string, pin: { size
   }
 }
 
-async function matches(path: string, pin: { size: number; sha256: string }): Promise<boolean> {
+/** `ok`: pinned size and sha256. `bad`: the file exists but does not match (its stat, to remove that very file). */
+async function verify(path: string, pin: { size: number; sha256: string }): Promise<{ ok: boolean; bad?: Stats }> {
   const st = await stat(path).catch(() => null);
-  if (!st || st.size !== pin.size) return false;
-  const hash = createHash("sha256");
-  for await (const chunk of createReadStream(path)) hash.update(chunk as Buffer);
-  return hash.digest("hex") === pin.sha256;
+  if (!st) return { ok: false };
+  if (st.size === pin.size) {
+    const hash = createHash("sha256");
+    for await (const chunk of createReadStream(path)) hash.update(chunk as Buffer);
+    if (hash.digest("hex") === pin.sha256) return { ok: true };
+  }
+  return { ok: false, bad: st };
 }
 
 function sizeOf(path: string): number | null {
