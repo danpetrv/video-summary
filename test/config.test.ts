@@ -219,6 +219,40 @@ test("migration: maxBytes/maxSeconds/local on whisperx and diarize on openai-com
     .toThrow("config: providers[0].diarize: must be true or false");
 });
 
+test("migration: a provider v0.3 counted as cloud (not local) is now the user's own server -> warning", () => {
+  const own = (i: number, name: string) =>
+    `providers[${i}] "${name}": now treated as your own server — local files are sent to it without asking`;
+  const w: string[] = [];
+  // a v0.3 config (it has bitrate): openai-compatible without preset defaulted to local: false
+  parseConfig({ bitrate: "adaptive", providers: [
+    { name: "own", type: "openai-compatible", url: "http://h/v1", model: "m" },
+    { name: "own2", type: "openai-compatible", url: "http://h2/v1", model: "m", local: false },
+    { name: "mine", type: "openai-compatible", url: "http://h3/v1", model: "m", local: true },
+    { name: "wx", type: "whisperx", url: "https://a" },
+    { name: "wx2", type: "whisperx", url: "https://b", local: false },
+  ] }, w);
+  expect(w).toEqual([
+    "bitrate: removed in v0.4.0 — ignored",
+    own(0, "own"),
+    "providers[1].local: removed in v0.4.0 — ignored",
+    own(1, "own2"),
+    "providers[2].local: removed in v0.4.0 — ignored",
+    "providers[4].local: removed in v0.4.0 — ignored",
+    own(4, "wx2"),
+  ]);
+  // any v0.3-only setting marks the config as old, not just bitrate
+  const w2: string[] = [];
+  parseConfig({ providers: [
+    { name: "groq", type: "openai-compatible", preset: "groq" },
+    { name: "own", type: "openai-compatible", url: "http://h/v1", model: "m" },
+  ] }, w2);
+  expect(w2).toContain(own(1, "own"));
+  // a v0.4 config: openai-compatible has no local key at all, nothing to warn about
+  const w3: string[] = [];
+  parseConfig({ providers: [{ name: "own", type: "openai-compatible", url: "http://h/v1", model: "m" }] }, w3);
+  expect(w3).toEqual([]);
+});
+
 test("saveConfig after migration writes the cleaned config", async () => {
   const p = join(tmp, "old.json");
   writeFileSync(p, JSON.stringify({ bitrate: "adaptive", providers: [

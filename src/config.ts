@@ -116,8 +116,17 @@ function parseLocal(raw: Record<string, unknown>, path: string, seen: Set<string
   };
 }
 
-/** null = an old cloud preset provider, skipped with a warning. */
-function parseProvider(raw: unknown, i: number, seen: Set<string>, warnings: string[]): ProviderConfig | null {
+/** A v0.3-only setting on a remote provider (v0.4 configs have none): the config is being migrated. */
+const hasLegacyKeys = (raw: unknown): boolean =>
+  isObj(raw) && raw.type !== "local" && (
+    raw.preset !== undefined || REMOVED_PROVIDER_KEYS.some((k) => raw[k] !== undefined) ||
+    (raw.type === "openai-compatible" && raw.diarize !== undefined));
+
+/**
+ * null = an old cloud preset provider, skipped with a warning. `fromV03`: the config is from v0.3,
+ * where a provider not counted as local (openai-compatible by default) never got local files unasked.
+ */
+function parseProvider(raw: unknown, i: number, seen: Set<string>, warnings: string[], fromV03 = false): ProviderConfig | null {
   const path = `providers[${i}]`;
   if (!isObj(raw)) return fail(path, "must be an object");
   if (raw.type === "local") return parseLocal(raw, path, seen);
@@ -144,6 +153,9 @@ function parseProvider(raw: unknown, i: number, seen: Set<string>, warnings: str
     const diarize = optBool(raw, "diarize", path);
     if (diarize !== undefined) p.diarize = diarize;
   }
+  if (raw.local === false || (fromV03 && p.type === "openai-compatible" && raw.local !== true)) {
+    warnings.push(`${path} ${JSON.stringify(name)}: now treated as your own server — local files are sent to it without asking`);
+  }
   return p;
 }
 
@@ -168,8 +180,9 @@ export function parseConfig(raw: unknown, warnings: string[] = []): Config {
   if (raw.providers !== undefined) {
     if (!Array.isArray(raw.providers)) return fail("providers", "must be an array");
     const seen = new Set<string>();
+    const fromV03 = raw.bitrate !== undefined || raw.providers.some(hasLegacyKeys);
     cfg.providers = raw.providers
-      .map((p, i) => parseProvider(p, i, seen, warnings))
+      .map((p, i) => parseProvider(p, i, seen, warnings, fromV03))
       .filter((p): p is ProviderConfig => p !== null);
   }
   if (raw.readeck !== undefined && raw.readeck !== null) {
