@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, truncateSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Config, type ProviderConfig, DEFAULT_CONFIG } from "../src/config";
@@ -141,7 +141,7 @@ test("local provider not installed -> skipped before any download with the `loca
  */
 function localDeps(env: Env, o: { gpu?: boolean; cli?: (bin: string) => { code: number; stdout: string; stderr: string } } = {}): FetchDeps {
   const dir = mkdtempSync(join(root, "local-"));
-  const xdg = { XDG_DATA_HOME: join(dir, "data"), XDG_CACHE_HOME: join(dir, "cache") };
+  const xdg = { XDG_DATA_HOME: join(dir, "data"), XDG_CACHE_HOME: join(dir, "cache"), XDG_STATE_HOME: join(dir, "state") };
   const paths = localPaths(xdg, root);
   for (const b of o.gpu ? ["linux-vulkan-x64", "linux-cpu-x64"] as const : ["linux-cpu-x64"] as const) {
     mkdirSync(paths.binDir(b), { recursive: true });
@@ -189,6 +189,74 @@ test("local no speech -> next provider (whisperx) is used, asr_failed names loca
   const r = await fetchCmd(URL1, flags, d);
   expect(r.asr_provider).toBe("wx");
   expect(r.asr_failed).toEqual(["local: no speech recognized"]);
+});
+
+const speedsOf = (d: FetchDeps) => {
+  const file = localPaths(d.env, d.home).speedFile;
+  return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : null;
+};
+const SLOW = "no ASR provider fits: local: ~12 min on CPU (measured speed 8x); add --accept-slow to wait";
+
+test("90-min video, only local, CPU default speed -> UserError with add --accept-slow before any audio download", async () => {
+  const d = localDeps({ meta: { ...noMeta, duration: 5400 }, providers: [LOCAL] });
+  const err = await fetchCmd(URL1, flags, d).catch((e) => e);
+  expect(err).toBeInstanceOf(UserError);
+  expect(err.message).toBe(SLOW);
+  expect(hasFormatDownload()).toBe(false);
+  expect(calls.cmds.some((c) => c[0] === "ffmpeg")).toBe(false);
+  // with whisperx next in the list it is used instead, nothing reported as failed
+  const r = await fetchCmd(URL1, flags, localDeps({ meta: { ...noMeta, duration: 5400 }, providers: [LOCAL, WX] }));
+  expect([r.asr_provider, r.asr_failed]).toEqual(["wx", undefined]);
+});
+
+test("90-min video, only local, --accept-slow -> proceeds with local", async () => {
+  const r = await fetchCmd(URL1, { ...flags, acceptSlow: true }, localDeps({ meta: { ...noMeta, duration: 5400 }, providers: [LOCAL] }));
+  expect([r.source, r.asr_provider]).toEqual(["asr", "local"]);
+});
+
+test("slow gate uses the measured speed from speed.json and the GPU when it will run", async () => {
+  // a 30-min video at a measured 2x on CPU -> 15 min (the 8x default would give ~4 min)
+  const d = localDeps({ meta: { ...noMeta, duration: 1800 }, providers: [LOCAL] });
+  const file = localPaths(d.env, d.home).speedFile;
+  mkdirSync(join(file, ".."), { recursive: true });
+  writeFileSync(file, JSON.stringify({ "parakeet:ultra:cpu": 2, "parakeet:ultra:gpu": 100 }));
+  const err = await fetchCmd(URL1, flags, d).catch((e) => e);
+  expect(err.message).toBe("no ASR provider fits: local: ~15 min on CPU (measured speed 2x); add --accept-slow to wait");
+  // 90 min on the GPU build at the default 60x is 1.5 min: not gated
+  const r = await fetchCmd(URL1, flags, localDeps({ meta: { ...noMeta, duration: 5400 }, providers: [LOCAL] }, { gpu: true }));
+  expect(r.asr_provider).toBe("local");
+});
+
+test("unknown duration: the slow gate applies after compression, by the real duration", async () => {
+  const meta = { ...noMeta, extractor_key: "Generic", id: "x4", duration: null };
+  const err = await fetchCmd(URL1, flags, localDeps({ meta, oggDuration: "5400\n", providers: [LOCAL] })).catch((e) => e);
+  expect(err).toBeInstanceOf(UserError);
+  expect(err.message).toBe(SLOW);
+  expect(calls.cmds.some((c) => c[0]!.endsWith("/parakeet-cli"))).toBe(false);
+});
+
+test("after a local run speed.json is updated under the device that actually ran", async () => {
+  // each clock reading is 10 s after the previous one: 213 s of audio in 10 s -> 21.3x
+  const tick = () => { let t = 0; return () => (t += 10_000); };
+  const gpu = { ...localDeps({ meta: noMeta, providers: [LOCAL] }, { gpu: true }), clock: tick() };
+  await fetchCmd(URL1, flags, gpu);
+  expect(speedsOf(gpu)).toEqual({ "parakeet:ultra:gpu": 21.3 });
+
+  // GPU fails, CPU recognizes -> the cpu key
+  const fallback = {
+    ...localDeps({ meta: noMeta, providers: [LOCAL] }, {
+      gpu: true,
+      cli: (bin) => bin.includes("vulkan") ? { code: 1, stdout: "", stderr: "boom" } : { code: 0, stdout: parakeetJson, stderr: "" },
+    }),
+    clock: tick(),
+  };
+  await fetchCmd(URL1, { ...flags, force: true }, fallback);
+  expect(speedsOf(fallback)).toEqual({ "parakeet:ultra:cpu": 21.3 });
+
+  // a non-local provider records nothing
+  const wxOnly = localDeps({ meta: noMeta, providers: [WX] });
+  await fetchCmd(URL1, { ...flags, force: true }, wxOnly);
+  expect(speedsOf(wxOnly)).toBeNull();
 });
 
 test("local provider and a video in an unsupported language -> the next provider, before any download", async () => {

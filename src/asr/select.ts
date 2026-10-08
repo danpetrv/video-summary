@@ -1,6 +1,7 @@
 import { readKey } from "../config";
 import { transcribeParakeet } from "../local/parakeet";
 import { LANGUAGES } from "../local/pins";
+import { SLOW_MINUTES } from "../local/speed";
 import { type Fetcher, type Platform, type Runner, UserError } from "../types";
 import { modelsReachable, transcribeOpenAI } from "./openai-compatible";
 import type { ResolvedProvider } from "./presets";
@@ -40,12 +41,19 @@ export type SelectInput = {
   estimate: (p: ResolvedProvider, durationSec: number) => SlowEstimate | null;
 };
 
-function reject(c: Candidate, language: string | null): string | null {
+function reject(c: Candidate, i: SelectInput): string | null {
   // Checked first: installing the engine would not help.
-  const lang = primaryLang(language);
+  const lang = primaryLang(i.language);
   if (c.provider.type === "local" && lang && !LANGUAGES.includes(lang)) return `language ${lang} not supported`;
   if (!c.available) return c.provider.type === "local" ? "local engine not installed — run `local install`" : "not reachable";
   if (c.keyMissing) return `no API key (${c.keyMissing})`;
+  // Only the local engine can be slow enough to ask first; servers are never gated.
+  if (c.provider.type === "local" && !i.acceptSlow) {
+    const e = i.estimate(c.provider, i.durationSec);
+    if (e && e.minutes > SLOW_MINUTES) {
+      return `~${Math.ceil(e.minutes)} min on ${e.device.toUpperCase()} (measured speed ${Math.round(e.speed)}x); add --accept-slow to wait`;
+    }
+  }
   return null;
 }
 
@@ -53,7 +61,7 @@ export function chooseProvider(i: SelectInput): { provider: ResolvedProvider } |
   if (i.candidates.length === 0) return { error: "no ASR providers configured — run setup (see references/setup.md)" };
   const reasons: string[] = [];
   for (const c of i.candidates) {
-    const why = reject(c, i.language);
+    const why = reject(c, i);
     if (why === null) return { provider: c.provider };
     reasons.push(`${c.provider.name}: ${why}`);
   }

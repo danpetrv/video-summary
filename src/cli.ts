@@ -18,7 +18,7 @@ export type CliDeps = {
 
 const USAGE =
   "usage: video-summary check | config path|get [key]|init [--force]|set <key> <json> | " +
-  "fetch <url|path> [--no-diarize] [--force] | finalize <dir> | readeck <dir> | local install|status";
+  "fetch <url|path> [--no-diarize] [--force] [--accept-slow] | finalize <dir> | readeck <dir> | local install|status";
 const NO_CONFIG = "no config — run setup (see references/setup.md)";
 
 async function requireConfig(path: string): Promise<Config> {
@@ -114,7 +114,9 @@ export async function main(argv: string[], d: CliDeps): Promise<unknown> {
       if (!src) throw new UserError(USAGE);
       const cfg = await requireConfig(path);
       // --allow-cloud (v0.3 and older SKILL.md) is accepted and ignored, like any other unknown flag.
-      const flags = { diarize: !rest.includes("--no-diarize"), force: rest.includes("--force") };
+      const flags = {
+        diarize: !rest.includes("--no-diarize"), force: rest.includes("--force"), acceptSlow: rest.includes("--accept-slow"),
+      };
       return fetchCmd(src, flags, {
         run: d.run, fetch: d.fetch, cfg, env: d.env, now: d.now, cwd: d.cwd, home: d.home,
         platform: d.platform, arch: d.arch, exists: d.exists, has: d.has,

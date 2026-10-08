@@ -69,6 +69,18 @@ function parseWords(name: string, stdout: string): Word[] {
   return words as Word[];
 }
 
+/** Builds a run uses: the GPU one only when planned (device not `cpu`) and its parakeet-cli is installed. */
+function runBuilds(p: LocalProvider, d: Omit<ParakeetDeps, "run">): { gpu: BuildId | null; cpu: BuildId } {
+  const plan = planBuilds({ platform: d.platform, arch: d.arch, vulkanLib: findVulkanLib(d.exists), device: p.device });
+  const gpu = plan.gpu && d.exists(localPaths(d.env, d.home).cli(plan.gpu)) ? plan.gpu : null;
+  // darwin arm64 has one build: its CPU run is the Metal build with PARAKEET_DEVICE=cpu.
+  return { gpu, cpu: plan.cpu ?? plan.gpu! };
+}
+
+/** Device a run will start on (the slow-run estimate uses it). */
+export const plannedDevice = (p: LocalProvider, d: Omit<ParakeetDeps, "run">): "gpu" | "cpu" =>
+  runBuilds(p, d).gpu ? "gpu" : "cpu";
+
 /**
  * ogg -> 16 kHz mono wav (parakeet-cli reads only wav) -> `parakeet-cli --vad --json` -> cues.
  * GPU first when its build is installed; if that run fails, the CPU run follows and `notes` says so.
@@ -76,10 +88,7 @@ function parseWords(name: string, stdout: string): Word[] {
  */
 export async function transcribeParakeet(ogg: string, p: LocalProvider, d: ParakeetDeps): Promise<AsrResult> {
   const paths = localPaths(d.env, d.home);
-  const plan = planBuilds({ platform: d.platform, arch: d.arch, vulkanLib: findVulkanLib(d.exists), device: p.device });
-  // darwin arm64 has one build: its CPU run is the Metal build with PARAKEET_DEVICE=cpu.
-  const cpuBuild: BuildId = plan.cpu ?? plan.gpu!;
-  const gpuBuild = plan.gpu && d.exists(paths.cli(plan.gpu)) ? plan.gpu : null;
+  const { gpu: gpuBuild, cpu: cpuBuild } = runBuilds(p, d);
   const wav = `${ogg.replace(/\.[^./]*$/, "")}.wav`;
   const threads = String(Math.min(availableParallelism(), 8));
 

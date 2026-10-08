@@ -170,6 +170,14 @@ test("fetch: --allow-cloud from an old SKILL.md is accepted and ignored", async 
   expect(err.message).toStartWith("yt-dlp");
 });
 
+test("fetch: --accept-slow is a flag, not the source; usage lists it", async () => {
+  await call(["config", "init"]);
+  const err = (await call(["fetch", "--accept-slow", "https://x.example/v"]).catch((e) => e)) as Error;
+  expect(err.message).toStartWith("yt-dlp");
+  const usage = (await call(["nope"]).catch((e) => e)) as Error;
+  expect(usage.message).toContain("fetch <url|path> [--no-diarize] [--force] [--accept-slow]");
+});
+
 test("fetch and readeck without config -> UserError 'no config — run setup'", async () => {
   await expect(call(["fetch", "https://x.example/v"])).rejects.toThrow(/no config — run setup/);
   await expect(call(["readeck", root])).rejects.toThrow(/no config — run setup/);

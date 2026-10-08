@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveProvider } from "../../src/asr/presets";
-import { LOCAL_TIMEOUT_MS, transcribeParakeet, wordsToCues } from "../../src/local/parakeet";
+import { LOCAL_TIMEOUT_MS, plannedDevice, transcribeParakeet, wordsToCues } from "../../src/local/parakeet";
 import { localPaths } from "../../src/local/paths";
 import type { BuildId } from "../../src/local/pins";
 import { type Runner, UserError } from "../../src/types";
@@ -214,4 +214,15 @@ test("transcribe: ffmpeg fails -> UserError, parakeet-cli is not run", async () 
   expect(err).toBeInstanceOf(UserError);
   expect(err.message).toBe("local: ffmpeg could not convert audio to wav: audio.ogg: Invalid data found when processing input");
   expect(m.parakeetCalls()).toEqual([]);
+});
+
+test("plannedDevice: gpu only when the GPU build is installed and device is not cpu (same rule as the run)", () => {
+  const both = ["linux-vulkan-x64", "linux-cpu-x64"] as BuildId[];
+  expect(plannedDevice(local(), machine({ builds: both, vulkanLib: true }).d)).toBe("gpu");
+  expect(plannedDevice(local("cpu"), machine({ builds: both, vulkanLib: true }).d)).toBe("cpu");
+  // lib present but the Vulkan build not installed; build installed but the lib gone
+  expect(plannedDevice(local(), machine({ builds: ["linux-cpu-x64"], vulkanLib: true }).d)).toBe("cpu");
+  expect(plannedDevice(local(), machine({ builds: both }).d)).toBe("cpu");
+  const mac = machine({ builds: ["macos-metal-arm64"], platform: "darwin", arch: "arm64" }).d;
+  expect([plannedDevice(local(), mac), plannedDevice(local("cpu"), mac)]).toEqual(["gpu", "cpu"]);
 });

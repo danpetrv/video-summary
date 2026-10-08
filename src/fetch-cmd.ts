@@ -8,6 +8,9 @@ import { compressAudio, probeDuration } from "./audio";
 import { cleanCues, dedupeRolling, parseSrt, parseVtt, renderTranscript, toParagraphs } from "./captions";
 import { type Config, expandHome } from "./config";
 import { localStatus } from "./local/install";
+import { plannedDevice } from "./local/parakeet";
+import { localPaths } from "./local/paths";
+import { estimateLocal, readSpeeds, recordSpeed, speedKey } from "./local/speed";
 import { estimateTokens, type Meta, readMeta, type Source, writeMeta } from "./meta";
 import { findSidecarSubs, resolveInputPath, resolveItemDir } from "./paths";
 import { type Cue, type Fetcher, type Platform, type Runner, UserError } from "./types";
@@ -19,6 +22,7 @@ export type FetchDeps = {
   now: Date; cwd: string; home: string;
   // for the local engine's install status
   platform: Platform; arch: "x64" | "arm64"; exists: (p: string) => boolean; has: (bin: string) => boolean;
+  clock?: () => number; // ms; times local runs for the speed store (default Date.now)
 };
 export type FetchResult = {
   dir: string;
@@ -68,8 +72,12 @@ async function recognize(
   const local = providers.some((p) => p.type === "local") ? localStatus(d) : undefined;
   const candidates: Candidate[] = await probeProviders(providers, d.fetch, d.env, d.home, local);
   const language = primaryLang(item.language);
+  const speedFile = localPaths(d.env, d.home).speedFile;
+  const speeds = local ? await readSpeeds(speedFile) : {};
+  const estimate = (p: ResolvedProvider, durationSec: number) =>
+    p.type === "local" ? estimateLocal(p, durationSec, speeds, plannedDevice(p, d)) : null;
   const select = (cs: Candidate[], durationSec: number) =>
-    chooseProvider({ candidates: cs, durationSec, language, acceptSlow: flags.acceptSlow ?? false, estimate: () => null });
+    chooseProvider({ candidates: cs, durationSec, language, acceptSlow: flags.acceptSlow ?? false, estimate });
   const pick = (durationSec: number): ResolvedProvider => {
     const c = select(candidates, durationSec);
     if ("error" in c) throw new UserError(c.error);
@@ -91,12 +99,17 @@ async function recognize(
   const durationSec = item.duration ?? (await probeDuration(ogg, d.run));
   provider ??= pick(durationSec);
 
+  const clock = d.clock ?? Date.now;
   const failed: string[] = [];
   const tried = new Set<string>();
   for (;;) {
     tried.add(provider.name);
     try {
+      const started = clock();
       const asr = await transcribeWith(provider, ogg, { language, diarize: flags.diarize }, d);
+      if (provider.type === "local" && asr.device) {
+        await noteSpeed(speedFile, speedKey(provider, asr.device), durationSec, clock() - started);
+      }
       // Non-fatal problems of the provider that succeeded (GPU failed, CPU used) are reported alongside.
       return { asr, failed: [...failed, ...(asr.notes ?? [])] };
     } catch (e) {
@@ -109,6 +122,16 @@ async function recognize(
       throw new UserError(`speech recognition failed: ${failed.join("; ")}${why}`);
     }
     provider = next.provider;
+  }
+}
+
+/** Feed a finished local run into the speed store; losing a measurement must not lose the transcript. */
+async function noteSpeed(file: string, key: string, durationSec: number, elapsedMs: number): Promise<void> {
+  if (!(elapsedMs > 0) || !(durationSec > 0)) return;
+  try {
+    await recordSpeed(file, key, durationSec / (elapsedMs / 1000));
+  } catch {
+    // e.g. a read-only state dir: the next estimate falls back to the previous or default speed
   }
 }
 

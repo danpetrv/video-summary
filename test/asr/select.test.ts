@@ -36,6 +36,31 @@ test("chooseProvider: local not installed -> reason names `local install`; insta
   expect(chooseProvider({ ...base, candidates: [ok(loc), ok(wx)] })).toEqual({ provider: loc });
 });
 
+const slow = (minutes: number, device: "gpu" | "cpu" = "cpu", speed = 8): SelectInput["estimate"] => () => ({ minutes, device, speed });
+
+test("chooseProvider: local over 10 min without acceptSlow -> rejected with the gate reason, next provider chosen", () => {
+  expect(chooseProvider({ ...base, estimate: slow(11.25), candidates: [ok(loc), ok(wx)] })).toEqual({ provider: wx });
+  expect(chooseProvider({ ...base, estimate: slow(11.25), candidates: [ok(loc)] }))
+    .toEqual({ error: "no ASR provider fits: local: ~12 min on CPU (measured speed 8x); add --accept-slow to wait" });
+  expect(chooseProvider({ ...base, estimate: slow(20.01, "gpu", 4.6), candidates: [ok(loc)] }))
+    .toEqual({ error: "no ASR provider fits: local: ~21 min on GPU (measured speed 5x); add --accept-slow to wait" });
+  // exactly 10 min is not over the threshold; no estimate -> not gated
+  expect(chooseProvider({ ...base, estimate: slow(10), candidates: [ok(loc), ok(wx)] })).toEqual({ provider: loc });
+  expect(chooseProvider({ ...base, candidates: [ok(loc), ok(wx)] })).toEqual({ provider: loc });
+  // not installed is the reason that matters, not the time
+  expect(chooseProvider({ ...base, estimate: slow(60), candidates: [{ ...ok(loc), available: false }] }))
+    .toEqual({ error: "no ASR provider fits: local: local engine not installed — run `local install`" });
+});
+
+test("chooseProvider: local over 10 min with acceptSlow -> chosen", () => {
+  expect(chooseProvider({ ...base, acceptSlow: true, estimate: slow(90), candidates: [ok(loc), ok(wx)] })).toEqual({ provider: loc });
+});
+
+test("chooseProvider: whisperx and openai-compatible are never gated", () => {
+  expect(chooseProvider({ ...base, estimate: slow(600), candidates: [ok(wx)] })).toEqual({ provider: wx });
+  expect(chooseProvider({ ...base, estimate: slow(600), candidates: [ok(own)] })).toEqual({ provider: own });
+});
+
 test("probeProviders: local availability comes from the install status, no network, no key", async () => {
   const f: Fetcher = async (u) => { throw new Error(`local must not be probed over the network: ${u}`); };
   expect(await probeProviders([loc], f, {}, "/nohome", { installed: true }))
