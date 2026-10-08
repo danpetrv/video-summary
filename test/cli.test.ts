@@ -28,7 +28,7 @@ const call = (argv: string[], over: Partial<CliDeps> = {}) => main(argv, deps(ov
 
 test("check without config -> config.exists false, ok false, still JSON", async () => {
   const r = (await call(["check"])) as any;
-  expect(r.config).toEqual({ path: cfgFile, exists: false, valid: false });
+  expect(r.config).toEqual({ path: cfgFile, exists: false, valid: false, warnings: [] });
   expect(r.ok).toBe(false);
   expect(r.deps.ok).toBe(true);
   expect(r.readeck).toBe("disabled");
@@ -36,17 +36,30 @@ test("check without config -> config.exists false, ok false, still JSON", async 
 });
 
 test("check with broken config -> config.valid false, error with field path", async () => {
-  writeFileSync(cfgFile, JSON.stringify({ bitrate: "wat" }));
+  writeFileSync(cfgFile, JSON.stringify({ subtitles: "wat" }));
   const r = (await call(["check"])) as any;
   expect(r.config.exists).toBe(true);
   expect(r.config.valid).toBe(false);
-  expect(r.config.error).toContain("bitrate");
+  expect(r.config.error).toContain("subtitles");
   expect(r.ok).toBe(false);
+});
+
+test("check reports migration warnings and stays valid", async () => {
+  writeFileSync(cfgFile, JSON.stringify({
+    providers: [{ name: "groq", type: "openai-compatible", preset: "groq", tier: "free", keyEnv: "GROQ_API_KEY" }],
+  }));
+  const r = (await call(["check"])) as any;
+  expect(r.config).toEqual({
+    path: cfgFile, exists: true, valid: true,
+    warnings: ['providers[0] "groq": cloud providers were removed in v0.4.0 — skipped'],
+  });
+  expect(r.ok).toBe(true);
+  expect(r.providers).toEqual([]);
 });
 
 test("check with valid config -> ok true, providers probed, readeck configured", async () => {
   writeFileSync(cfgFile, JSON.stringify({
-    providers: [{ name: "w", type: "whisperx", url: "http://x:1", local: true }],
+    providers: [{ name: "w", type: "whisperx", url: "http://x:1" }],
     readeck: { url: "https://rd", keyEnv: "K" },
   }));
   const r = (await call(["check"])) as any;
@@ -54,6 +67,7 @@ test("check with valid config -> ok true, providers probed, readeck configured",
   expect(r.runtime).toEqual({ name: "node", version: "24.0.0" });
   expect(r.providers).toEqual([{ name: "w", available: false, keyMissing: null }]);
   expect(r.readeck).toBe("configured");
+  expect(r.config.warnings).toEqual([]);
 });
 
 test("config init creates DEFAULT_CONFIG; repeat without --force -> UserError 'config exists'", async () => {
@@ -67,7 +81,7 @@ test("config init creates DEFAULT_CONFIG; repeat without --force -> UserError 'c
 test("config path / get / set", async () => {
   expect(await call(["config", "path"])).toEqual({ path: cfgFile });
   await call(["config", "init"]);
-  await call(["config", "set", "providers", '[{"name":"g","type":"openai-compatible","preset":"groq","keyEnv":"G"}]']);
+  await call(["config", "set", "providers", '[{"name":"o","type":"openai-compatible","url":"http://h/v1","model":"m","keyEnv":"G"}]']);
   await call(["config", "set", "readeck", '{"url":"https://rd.example"}']);
   expect(await call(["config", "get", "readeck.url"])).toEqual({ value: "https://rd.example" });
   await call(["config", "set", "outputDir", "~/notes"]);
@@ -76,13 +90,19 @@ test("config path / get / set", async () => {
   await expect(call(["config", "get", "nope"])).rejects.toBeInstanceOf(UserError);
 });
 
-test("config limits: a row per provider", async () => {
+test("config limits is gone -> usage error; usage mentions neither limits nor --allow-cloud", async () => {
   await call(["config", "init"]);
-  await call(["config", "set", "providers", '[{"name":"g","type":"openai-compatible","preset":"groq","keyEnv":"G"}]']);
-  const r = (await call(["config", "limits"])) as any;
-  expect(r.bitrate).toBe("adaptive");
-  expect(r.rows).toHaveLength(1);
-  expect(r.rows[0].provider).toBe("g");
+  const err = (await call(["config", "limits"]).catch((e) => e)) as Error;
+  expect(err).toBeInstanceOf(UserError);
+  expect(err.message).toMatch(/^usage:/);
+  expect(err.message).not.toMatch(/limits|allow-cloud/);
+});
+
+test("fetch: --allow-cloud from an old SKILL.md is accepted and ignored", async () => {
+  await call(["config", "init"]);
+  // gets past argument parsing to yt-dlp (which fails in this stub), not a usage error
+  const err = (await call(["fetch", "--allow-cloud", "https://x.example/v"]).catch((e) => e)) as Error;
+  expect(err.message).toStartWith("yt-dlp");
 });
 
 test("fetch and readeck without config -> UserError 'no config — run setup'", async () => {
@@ -108,17 +128,17 @@ test("check still answers JSON for configs that used to crash it", async () => {
   const cases: [string, (r: any) => void][] = [
     [JSON.stringify({ providers: [{ name: "c", type: "openai-compatible", url: "http://h/v1" }] }), (r) => {
       expect(r.config.valid).toBe(false);
-      expect(r.config.error).toBe("config: providers[0].model: required without preset");
+      expect(r.config.error).toBe("config: providers[0].model: required");
     }],
     [JSON.stringify({ providers: [{ name: "c", type: "openai-compatible", url: "/", model: "m" }] }), (r) => {
       expect(r.config.valid).toBe(false);
       expect(r.config.error).toBe("config: providers[0].url: required");
     }],
-    [JSON.stringify({ providers: [{ name: "g", type: "openai-compatible", preset: "groq", keyFile: keyDir }] }), (r) => {
+    [JSON.stringify({ providers: [{ name: "g", type: "openai-compatible", url: "http://h/v1", model: "m", keyFile: keyDir }] }), (r) => {
       expect(r.config.valid).toBe(true);
       expect(r.providers).toEqual([{ name: "g", available: true, keyMissing: `cannot read file ${keyDir} (EISDIR)` }]);
     }],
-    ['{"providers": [{"name": "g", "type": "openai-compatible", "preset": "groq",}]}', (r) => {
+    ['{"providers": [{"name": "g", "type": "openai-compatible", "url": "http://h/v1",}]}', (r) => {
       expect(r.config.valid).toBe(false);
       expect(r.config.error).toContain("invalid JSON");
     }],
@@ -133,7 +153,7 @@ test("check still answers JSON for configs that used to crash it", async () => {
 
 test("config set: a value that looks like JSON but does not parse -> UserError, not a string", async () => {
   await call(["config", "init"]);
-  await expect(call(["config", "set", "providers", '[{"name":"g","type":"openai-compatible","preset":"groq",}]']))
+  await expect(call(["config", "set", "providers", '[{"name":"g","type":"whisperx","url":"http://h",}]']))
     .rejects.toThrow(/^invalid JSON for providers: /);
   await expect(call(["config", "set", "readeck", '{"url":"https://r"']))
     .rejects.toThrow(/^invalid JSON for readeck: /);
@@ -148,7 +168,7 @@ test("malformed key never reaches stdout/stderr of the real CLI (check, readeck)
   const keyFile = join(root, "leak.key");
   writeFileSync(keyFile, `${secret}\n${secret}-second-line\n`);
   writeFileSync(cfgFile, JSON.stringify({
-    providers: [{ name: "g", type: "openai-compatible", preset: "groq", keyFile }],
+    providers: [{ name: "g", type: "openai-compatible", url: "http://127.0.0.1:9/v1", model: "m", keyFile }],
     readeck: { url: "http://127.0.0.1:9", keyFile },
   }));
   const item = mkdtempSync(join(root, "item-"));

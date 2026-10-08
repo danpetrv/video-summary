@@ -1,9 +1,9 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, truncateSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Config, type ProviderConfig, DEFAULT_CONFIG } from "../src/config";
-import { type FetchDeps, fetchCmd } from "../src/fetch-cmd";
+import { type FetchDeps, type FetchFlags, fetchCmd } from "../src/fetch-cmd";
 import { readMeta, writeMeta } from "../src/meta";
 import { type Fetcher, type Runner, UserError } from "../src/types";
 
@@ -13,17 +13,17 @@ const vtt = await Bun.file(join(FX, "manual.en.vtt")).text();
 const autoVtt = await Bun.file(join(FX, "auto.en.vtt")).text();
 const srt = await Bun.file(join(FX, "sample.ru.srt")).text();
 const wxJson = await Bun.file(join(FX, "whisperx-diarized.json")).json();
-const groqJson = await Bun.file(join(FX, "groq-verbose.json")).json();
+const verboseJson = await Bun.file(join(FX, "groq-verbose.json")).json();
 const root = mkdtempSync(join(tmpdir(), "vs-fetch-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 const WX: ProviderConfig = { name: "wx", type: "whisperx", url: "http://wx:9000" };
-const GROQ: ProviderConfig = { name: "groq", type: "openai-compatible", preset: "groq", keyEnv: "GROQ_KEY" };
-const GROQ_URL = "https://api.groq.com";
+const OWN_URL = "http://own:8000/v1";
+const OWN: ProviderConfig = { name: "own", type: "openai-compatible", url: OWN_URL, model: "m" };
 
 type Env = {
-  meta?: object; health?: number; asrStatus?: number; groqStatus?: number; oggDuration?: string; oggSize?: number;
-  subsExt?: "vtt" | "srt"; cfg?: Partial<Config>; providers?: ProviderConfig[]; groqKey?: boolean; autoFail?: boolean;
+  meta?: object; health?: number; asrStatus?: number; modelsStatus?: number; ownStatus?: number; oggDuration?: string;
+  subsExt?: "vtt" | "srt"; cfg?: Partial<Config>; providers?: ProviderConfig[]; autoFail?: boolean;
 };
 let calls: { cmds: string[][]; urls: string[] };
 let base: string;
@@ -52,7 +52,7 @@ function deps(env: Env = {}): FetchDeps {
       return { code: 0, stdout: "", stderr: "" };
     }
     if (cmd[0] === "ffmpeg") {
-      writeFileSync(cmd.at(-1)!, Buffer.alloc(env.oggSize ?? 1000));
+      writeFileSync(cmd.at(-1)!, Buffer.alloc(1000));
       return { code: 0, stdout: "", stderr: "" };
     }
     if (cmd[0] === "ffprobe")
@@ -63,16 +63,18 @@ function deps(env: Env = {}): FetchDeps {
     calls.urls.push(url);
     if (url.endsWith("/health")) return new Response("{}", { status: env.health ?? 200 });
     if (url.includes("/asr?")) return new Response(JSON.stringify(env.asrStatus ? { detail: "boom" } : wxJson), { status: env.asrStatus ?? 200 });
-    if (url.startsWith(GROQ_URL)) {
-      return new Response(JSON.stringify(env.groqStatus ? { error: { message: "down" } } : groqJson), { status: env.groqStatus ?? 200 });
+    if (url === `${OWN_URL}/models`) return new Response("{}", { status: env.modelsStatus ?? 200 });
+    if (url === `${OWN_URL}/audio/transcriptions`) {
+      return new Response(JSON.stringify(env.ownStatus ? { error: { message: "down" } } : verboseJson), { status: env.ownStatus ?? 200 });
     }
     throw new Error(`unexpected URL ${url}`);
   };
-  const cfg: Config = { ...DEFAULT_CONFIG, outputDir: base, providers: env.providers ?? [WX, GROQ], ...env.cfg };
-  const e = env.groqKey === false ? {} : { GROQ_KEY: "k" };
-  return { run, fetch, cfg, env: e, now: new Date(2026, 9, 2, 12), cwd: root, home: root };
+  const cfg: Config = { ...DEFAULT_CONFIG, outputDir: base, providers: env.providers ?? [WX, OWN], ...env.cfg };
+  return { run, fetch, cfg, env: {}, now: new Date(2026, 9, 2, 12), cwd: root, home: root };
 }
-const flags = { diarize: true, allowCloud: false };
+const flags: FetchFlags = { diarize: true };
+const ownCalled = () => calls.urls.includes(`${OWN_URL}/audio/transcriptions`);
+const ffmpegRates = () => calls.cmds.filter((c) => c[0] === "ffmpeg").map((c) => c[c.indexOf("-b:a") + 1]);
 const noMeta = { ...ytMeta, subtitles: { de: [] } };
 const URL1 = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
 const asrCall = () => new URL(calls.urls.find((u) => u.includes("/asr?"))!);
@@ -106,10 +108,17 @@ test("URL without manual subs -> audio -> whisperx with diarization", async () =
   expect(await Bun.file(r.transcript_path).text()).toContain("**Speaker 2:** Привет! Начнём с вопросов.");
 });
 
-test("URL without manual subs, whisperx 502, key present -> groq", async () => {
+test("URL without manual subs, whisperx 502 -> own openai-compatible server", async () => {
   const r = await fetchCmd(URL1, flags, deps({ meta: noMeta, health: 502 }));
-  expect([r.asr_provider, r.diarized]).toEqual(["groq", false]);
-  expect((await readMeta(r.dir))!.asr_provider).toBe("groq");
+  expect([r.asr_provider, r.diarized]).toEqual(["own", false]);
+  expect((await readMeta(r.dir))!.asr_provider).toBe("own");
+});
+
+test("openai-compatible whose /models does not answer is skipped before any download", async () => {
+  const err = await fetchCmd(URL1, flags, deps({ meta: noMeta, health: 502, modelsStatus: 404 })).catch((e) => e);
+  expect(err).toBeInstanceOf(UserError);
+  expect(err.message).toBe("no ASR provider fits: wx: not reachable; own: not reachable");
+  expect(hasFormatDownload()).toBe(false);
 });
 
 test("local file via ~ with sidecar .srt -> sidecar-subs, no ASR", async () => {
@@ -125,24 +134,17 @@ test("local file via ~ with sidecar .srt -> sidecar-subs, no ASR", async () => {
   ]);
 });
 
-test("local file, no subs, whisperx 502, no --allow-cloud -> UserError with --allow-cloud, groq not called, no ffmpeg", async () => {
+test("--allow-cloud is accepted and ignored: a local file goes to the own server with or without it", async () => {
   writeFileSync(join(root, "solo.m4a"), "");
-  const err = await fetchCmd("solo.m4a", flags, deps({ health: 502 })).catch((e) => e);
-  expect(err).toBeInstanceOf(UserError);
-  expect(err.message).toContain("--allow-cloud");
-  expect(err.message).toContain("wx: not reachable");
-  expect(calls.urls.some((u) => u.includes("groq"))).toBe(false);
-  expect(calls.cmds.some((c) => c[0] === "ffmpeg")).toBe(false);
-});
-
-test("local file, whisperx 502, --allow-cloud -> groq", async () => {
-  writeFileSync(join(root, "solo2.m4a"), "");
-  const r = await fetchCmd("solo2.m4a", { diarize: true, allowCloud: true }, deps({ health: 502 }));
-  expect(r.asr_provider).toBe("groq");
+  const r = await fetchCmd("solo.m4a", flags, deps({ health: 502 }));
+  expect(r.asr_provider).toBe("own");
+  // flags from an older caller still carrying allowCloud change nothing
+  const legacy = { diarize: true, allowCloud: false, force: true } as FetchFlags;
+  expect((await fetchCmd("solo.m4a", legacy, deps({ health: 502 }))).asr_provider).toBe("own");
 });
 
 test("--no-diarize -> whisperx gets diarize=false", async () => {
-  await fetchCmd(URL1, { diarize: false, allowCloud: false }, deps({ meta: noMeta }));
+  await fetchCmd(URL1, { diarize: false }, deps({ meta: noMeta }));
   expect(asrCall().searchParams.get("diarize")).toBe("false");
 });
 
@@ -160,7 +162,7 @@ test("rerun: same folder, summary.md untouched, readeck_bookmark_id kept", async
 
 test("whisperx up but /asr 502 (GPU busy) -> the next provider, the failure is reported in asr_failed", async () => {
   const r = await fetchCmd(URL1, flags, deps({ meta: noMeta, asrStatus: 502 }));
-  expect(r.asr_provider).toBe("groq");
+  expect(r.asr_provider).toBe("own");
   expect(r.asr_failed).toEqual(["wx: whisperx responded 502: {\"detail\":\"boom\"}"]);
   expect(existsSync(join(r.dir, ".work"))).toBe(false);
   // a repeated fetch returns the stored result: the old failure is not reported again
@@ -171,13 +173,12 @@ test("success on the first provider -> no asr_failed", async () => {
   expect((await fetchCmd(URL1, flags, deps({ meta: noMeta }))).asr_failed).toBeUndefined();
 });
 
-test("local file, whisperx /asr 500, no --allow-cloud -> not sent to the cloud, UserError with both reasons", async () => {
-  writeFileSync(join(root, "private.m4a"), "a");
-  const err = await fetchCmd("private.m4a", flags, deps({ asrStatus: 500 })).catch((e) => e);
+test("whisperx /asr fails and the other provider is down -> UserError with both reasons", async () => {
+  const err = await fetchCmd(URL1, flags, deps({ meta: noMeta, asrStatus: 500, modelsStatus: 503 })).catch((e) => e);
   expect(err).toBeInstanceOf(UserError);
   expect(err.message).toBe('speech recognition failed: wx: whisperx responded 500: {"detail":"boom"}; ' +
-    "no other provider fits: groq: cloud provider, needs --allow-cloud");
-  expect(calls.urls.some((u) => u.startsWith(GROQ_URL))).toBe(false);
+    "no other provider fits: own: not reachable");
+  expect(ownCalled()).toBe(false);
 });
 
 test("the only provider fails -> UserError (not an unexpected error) naming it", async () => {
@@ -187,10 +188,10 @@ test("the only provider fails -> UserError (not an unexpected error) naming it",
 });
 
 test("every provider fails -> UserError listing each, .work/audio.ogg stays; retry reuses it", async () => {
-  const err = await fetchCmd(URL1, flags, deps({ meta: noMeta, asrStatus: 500, groqStatus: 500 })).catch((e) => e);
+  const err = await fetchCmd(URL1, flags, deps({ meta: noMeta, asrStatus: 500, ownStatus: 500 })).catch((e) => e);
   expect(err).toBeInstanceOf(UserError);
   expect(err.message).toBe('speech recognition failed: wx: whisperx responded 500: {"detail":"boom"}; ' +
-    'groq responded 500: {"error":{"message":"down"}}');
+    'own responded 500: {"error":{"message":"down"}}');
   const dir = join(base, readdirSync(base)[0]!);
   expect(existsSync(join(dir, ".work/audio.ogg"))).toBe(true);
   expect(existsSync(join(dir, ".work/src.webm"))).toBe(false);
@@ -208,7 +209,7 @@ test("missing file -> UserError 'file not found: <path>'", async () => {
 });
 
 test("truncated audio.ogg from an interrupted run is not reused", async () => {
-  await fetchCmd(URL1, flags, deps({ meta: noMeta, asrStatus: 500, groqStatus: 500 })).catch(() => {});
+  await fetchCmd(URL1, flags, deps({ meta: noMeta, asrStatus: 500, ownStatus: 500 })).catch(() => {});
   calls.cmds = [];
   const r = await fetchCmd(URL1, flags, deps({ meta: noMeta, oggDuration: "60\n" }));
   expect(calls.cmds.some((c) => c[0] === "ffmpeg")).toBe(true);
@@ -238,10 +239,10 @@ test("subtitles arriving as srt are parsed as srt", async () => {
   expect(await Bun.file(r.transcript_path).text()).toContain("Добрый вечер, это стрим про миграцию.");
 });
 
-test("long stream (6805 s) is compressed at 28k to fit the Groq limit", async () => {
-  await fetchCmd(URL1, flags, deps({ meta: { ...noMeta, duration: 6805 }, oggDuration: "6805\n", providers: [GROQ] }));
-  const ff = calls.cmds.find((c) => c[0] === "ffmpeg")!;
-  expect(ff[ff.indexOf("-b:a") + 1]).toBe("28k");
+test("compression is always 32k (6805 s stream)", async () => {
+  const r = await fetchCmd(URL1, flags, deps({ meta: { ...noMeta, duration: 6805 }, oggDuration: "6805\n", providers: [OWN] }));
+  expect(ffmpegRates()).toEqual(["32k"]);
+  expect(r.asr_provider).toBe("own");
 });
 
 test("auto captions: manual+auto, no manual -> youtube-auto-subs, no ASR, rolling dupes removed", async () => {
@@ -262,29 +263,19 @@ test("auto captions off (manual) -> ASR even if auto exists", async () => {
 });
 
 test("provider is chosen BEFORE download: none fits -> UserError, no yt-dlp -f, no ffmpeg", async () => {
-  const err = await fetchCmd(URL1, flags, deps({ meta: { ...noMeta, duration: 9000 }, providers: [GROQ] })).catch((e) => e);
+  const err = await fetchCmd(URL1, flags, deps({ meta: noMeta, health: 502, providers: [WX] })).catch((e) => e);
   expect(err).toBeInstanceOf(UserError);
-  expect(err.message).toContain("groq: 2:30:00 exceeds duration limit");
+  expect(err.message).toBe("no ASR provider fits: wx: not reachable");
   expect(hasFormatDownload()).toBe(false);
   expect(calls.cmds.some((c) => c[0] === "ffmpeg")).toBe(false);
 });
 
 test("after compression src.* is removed; .work removed after success", async () => {
-  await fetchCmd(URL1, flags, deps({ meta: noMeta, asrStatus: 500, groqStatus: 500 })).catch(() => {});
+  await fetchCmd(URL1, flags, deps({ meta: noMeta, asrStatus: 500, ownStatus: 500 })).catch(() => {});
   const dir = join(base, readdirSync(base)[0]!);
   expect(readdirSync(join(dir, ".work")).filter((f) => f.startsWith("src."))).toEqual([]);
   const r = await fetchCmd(URL1, flags, deps({ meta: noMeta }));
   expect(existsSync(join(r.dir, ".work"))).toBe(false);
-});
-
-test("Generic link -> privateSource: cloud only with --allow-cloud", async () => {
-  const generic = { ...noMeta, extractor_key: "Generic", id: "x1" };
-  const d = () => deps({ meta: generic, providers: [GROQ] });
-  const err = await fetchCmd(URL1, flags, d()).catch((e) => e);
-  expect(err.message).toContain("--allow-cloud");
-  expect(hasFormatDownload()).toBe(false);
-  const r = await fetchCmd(URL1, { diarize: true, allowCloud: true }, d());
-  expect(r.asr_provider).toBe("groq");
 });
 
 test("manual subs from a non-YouTube extractor -> manual-subs", async () => {
@@ -298,23 +289,14 @@ test("link without scheme -> 'file not found: ... — if this is a link, add htt
   expect(err.message).toBe(`file not found: ${join(root, "youtube.com/watch?v=x")} — if this is a link, add https://`);
 });
 
-test("retry after provider change: ogg over the new provider's limit is recompressed with the new kbps", async () => {
+test("retry with another provider reuses the leftover audio.ogg as is", async () => {
   const meta = { ...noMeta, duration: 6805 };
-  await fetchCmd(URL1, flags, deps({ meta, oggDuration: "6805\n", asrStatus: 500, groqStatus: 500 })).catch(() => {});
-  const dir = join(base, readdirSync(base)[0]!);
-  truncateSync(join(dir, ".work/audio.ogg"), 25_000_001);
+  await fetchCmd(URL1, flags, deps({ meta, oggDuration: "6805\n", asrStatus: 500, ownStatus: 500 })).catch(() => {});
   calls.cmds = [];
   const r = await fetchCmd(URL1, flags, deps({ meta, oggDuration: "6805\n", health: 502 }));
-  const ff = calls.cmds.find((c) => c[0] === "ffmpeg")!;
-  expect(ff[ff.indexOf("-b:a") + 1]).toBe("28k");
-  expect(r.asr_provider).toBe("groq");
-});
-
-test("actual ogg larger than the chosen provider's limit -> UserError", async () => {
-  const err = await fetchCmd(URL1, flags, deps({ meta: noMeta, providers: [GROQ], oggSize: 25_000_001 })).catch((e) => e);
-  expect(err).toBeInstanceOf(UserError);
-  expect(err.message).toContain("over the file limit");
-  expect(calls.urls.some((u) => u.startsWith(GROQ_URL))).toBe(false);
+  expect(ffmpegRates()).toEqual([]);
+  expect(hasFormatDownload()).toBe(false);
+  expect(r.asr_provider).toBe("own");
 });
 
 test("summaryLanguage ru -> sidecar a.ru.srt preferred over a.en.srt", async () => {
@@ -334,21 +316,20 @@ test("outputDir from config with ~ is expanded", async () => {
   expect(r.dir.startsWith(join(root, "out-tilde"))).toBe(true);
 });
 
-test("unknown duration + Generic without --allow-cloud -> UserError before any download", async () => {
+test("unknown duration, no provider available -> UserError before any download", async () => {
   const meta = { ...noMeta, extractor_key: "Generic", id: "x2", duration: null };
-  const err = await fetchCmd(URL1, flags, deps({ meta, providers: [GROQ] })).catch((e) => e);
+  const err = await fetchCmd(URL1, flags, deps({ meta, providers: [OWN], modelsStatus: 502 })).catch((e) => e);
   expect(err).toBeInstanceOf(UserError);
-  expect(err.message).toContain("--allow-cloud");
+  expect(err.message).toBe("no ASR provider fits: own: not reachable");
   expect(hasFormatDownload()).toBe(false);
   expect(calls.cmds.some((c) => c[0] === "ffmpeg")).toBe(false);
 });
 
-test("unknown duration: probed 6805 s needs 28k -> recompressed from source at 28k, groq used", async () => {
-  const meta = { ...noMeta, duration: null };
-  const r = await fetchCmd(URL1, flags, deps({ meta, oggDuration: "6805\n", providers: [GROQ] }));
-  const ffs = calls.cmds.filter((c) => c[0] === "ffmpeg");
-  expect(ffs.map((c) => c[c.indexOf("-b:a") + 1])).toEqual(["32k", "28k"]);
-  expect(r.asr_provider).toBe("groq");
+test("unknown duration (Generic link): compressed once at 32k, own server used", async () => {
+  const meta = { ...noMeta, extractor_key: "Generic", id: "x3", duration: null };
+  const r = await fetchCmd(URL1, flags, deps({ meta, oggDuration: "6805\n", providers: [OWN] }));
+  expect(ffmpegRates()).toEqual(["32k"]);
+  expect(r.asr_provider).toBe("own");
   expect(existsSync(join(r.dir, ".work"))).toBe(false);
 });
 

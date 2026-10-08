@@ -3,15 +3,14 @@ import { dirname, join } from "node:path";
 import { UserError } from "./types";
 
 export type KeyRef = { keyFile?: string | null; keyEnv?: string | null };
+/** `diarize` is only meaningful for whisperx. */
 export type ProviderConfig = KeyRef & {
-  name: string; type: "whisperx" | "openai-compatible"; preset?: "groq" | "openai";
-  tier?: "free" | "dev"; url?: string; model?: string; diarize?: boolean; local?: boolean;
-  maxBytes?: number | null; maxSeconds?: number | null;
+  name: string; type: "whisperx" | "openai-compatible"; url: string; model?: string; diarize?: boolean;
 };
 export type ReadeckConfig = KeyRef & { url: string; label?: string };
 export type Config = {
   outputDir: string; summaryLanguage: string; summaryLength: string; subtitles: "manual" | "manual+auto";
-  bitrate: "adaptive" | "fixed"; providers: ProviderConfig[]; readeck: ReadeckConfig | null;
+  providers: ProviderConfig[]; readeck: ReadeckConfig | null;
 };
 
 export const DEFAULT_CONFIG: Config = {
@@ -19,15 +18,16 @@ export const DEFAULT_CONFIG: Config = {
   summaryLanguage: "auto",
   summaryLength: "medium",
   subtitles: "manual",
-  bitrate: "adaptive",
   providers: [],
   readeck: null,
 };
 
-const PRESETS = ["groq", "openai"];
 /** short | medium | long, or a target reading time of 1-60 minutes ("5m"). */
 const SUMMARY_LENGTH = /^(short|medium|long|([1-9]|[1-5]\d|60)m)$/;
 const TOP_KEYS = Object.keys(DEFAULT_CONFIG);
+/** Provider keys of the cloud era (v0.3): an old config still loads, these are dropped with a warning. */
+const REMOVED_PROVIDER_KEYS = ["tier", "maxBytes", "maxSeconds", "local"];
+const removed = (path: string) => `${path}: removed in v0.4.0 — ignored`;
 
 export function configPath(env: Record<string, string | undefined>, home: string): string {
   if (env.VIDEO_SUMMARY_CONFIG) return env.VIDEO_SUMMARY_CONFIG;
@@ -64,13 +64,6 @@ function optBool(o: Record<string, unknown>, k: string, path: string): boolean |
   return v;
 }
 
-function optLimit(o: Record<string, unknown>, k: string, path: string): number | null | undefined {
-  const v = o[k];
-  if (v === undefined || v === null) return v as null | undefined;
-  if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) return fail(`${path}.${k}`, "must be a positive number or null");
-  return v;
-}
-
 function keyRef(o: Record<string, unknown>, path: string): KeyRef {
   const out: KeyRef = {};
   const f = optStr(o, "keyFile", path);
@@ -86,54 +79,43 @@ function checkKeys(o: Record<string, unknown>, allowed: string[], path: string) 
   }
 }
 
-function parseProvider(raw: unknown, i: number, seen: Set<string>): ProviderConfig {
+/** null = an old cloud preset provider, skipped with a warning. */
+function parseProvider(raw: unknown, i: number, seen: Set<string>, warnings: string[]): ProviderConfig | null {
   const path = `providers[${i}]`;
   if (!isObj(raw)) return fail(path, "must be an object");
-  checkKeys(raw, ["name", "type", "preset", "tier", "url", "model", "diarize", "local", "maxBytes", "maxSeconds", "keyFile", "keyEnv"], path);
+  if (raw.preset !== undefined) {
+    const label = typeof raw.name === "string" && raw.name ? `${path} ${JSON.stringify(raw.name)}` : path;
+    warnings.push(`${label}: cloud providers were removed in v0.4.0 — skipped`);
+    return null;
+  }
+  // Speaker labels over openai-compatible existed only for the openai preset.
+  const legacy = raw.type === "openai-compatible" ? [...REMOVED_PROVIDER_KEYS, "diarize"] : REMOVED_PROVIDER_KEYS;
+  for (const k of legacy) if (raw[k] !== undefined) warnings.push(removed(`${path}.${k}`));
+  checkKeys(raw, ["name", "type", "url", "model", "diarize", "keyFile", "keyEnv", ...legacy], path);
   const name = str(raw.name, `${path}.name`);
   if (seen.has(name)) fail(`${path}.name`, `duplicate "${name}"`);
   seen.add(name);
   if (raw.type !== "whisperx" && raw.type !== "openai-compatible") {
     return fail(`${path}.type`, `unknown type ${JSON.stringify(raw.type)} (whisperx, openai-compatible)`);
   }
-  const p: ProviderConfig = { name, type: raw.type, ...keyRef(raw, path) };
-  if (raw.preset !== undefined) {
-    if (typeof raw.preset !== "string" || !PRESETS.includes(raw.preset)) {
-      fail(`${path}.preset`, `unknown preset ${JSON.stringify(raw.preset)} (${PRESETS.join(", ")})`);
-    }
-    if (raw.type !== "openai-compatible") fail(`${path}.preset`, "only allowed for type openai-compatible");
-    p.preset = raw.preset as "groq" | "openai";
-  }
-  if (raw.tier !== undefined) {
-    if (raw.tier !== "free" && raw.tier !== "dev") fail(`${path}.tier`, 'must be "free" or "dev"');
-    if (p.preset !== "groq") fail(`${path}.tier`, 'only allowed with preset "groq"');
-    p.tier = raw.tier as "free" | "dev";
-  }
-  const url = optStr(raw, "url", path);
-  if (url !== undefined && url !== null) {
-    p.url = url.replace(/\/+$/, "");
-    if (!p.url) fail(`${path}.url`, "required");
-  } else if (!p.preset) fail(`${path}.url`, "required");
+  const url = optStr(raw, "url", path)?.replace(/\/+$/, "");
+  if (!url) return fail(`${path}.url`, "required");
+  const p: ProviderConfig = { name, type: raw.type, url, ...keyRef(raw, path) };
   const model = optStr(raw, "model", path);
   if (model) p.model = model;
-  else if (p.type === "openai-compatible" && !p.preset) fail(`${path}.model`, "required without preset");
-  const diarize = optBool(raw, "diarize", path);
-  if (diarize === true && p.type !== "whisperx" && p.preset !== "openai") {
-    fail(`${path}.diarize`, "speaker labels are only supported by whisperx and the openai preset");
+  else if (p.type === "openai-compatible") fail(`${path}.model`, "required");
+  if (p.type === "whisperx") {
+    const diarize = optBool(raw, "diarize", path);
+    if (diarize !== undefined) p.diarize = diarize;
   }
-  if (diarize !== undefined) p.diarize = diarize;
-  const local = optBool(raw, "local", path);
-  if (local !== undefined) p.local = local;
-  const mb = optLimit(raw, "maxBytes", path);
-  if (mb !== undefined) p.maxBytes = mb;
-  const ms = optLimit(raw, "maxSeconds", path);
-  if (ms !== undefined) p.maxSeconds = ms;
   return p;
 }
 
-export function parseConfig(raw: unknown): Config {
+/** Settings removed in v0.4.0 are dropped, each with a line in `warnings`; anything else unknown is an error. */
+export function parseConfig(raw: unknown, warnings: string[] = []): Config {
   if (!isObj(raw)) return fail("(root)", "must be an object");
-  checkKeys(raw, TOP_KEYS, "");
+  if (raw.bitrate !== undefined) warnings.push(removed("bitrate"));
+  checkKeys(raw, [...TOP_KEYS, "bitrate"], "");
   const cfg: Config = { ...DEFAULT_CONFIG, providers: [], readeck: null };
   if (raw.outputDir !== undefined) cfg.outputDir = str(raw.outputDir, "outputDir");
   if (raw.summaryLanguage !== undefined) cfg.summaryLanguage = str(raw.summaryLanguage, "summaryLanguage");
@@ -147,14 +129,12 @@ export function parseConfig(raw: unknown): Config {
     if (raw.subtitles !== "manual" && raw.subtitles !== "manual+auto") fail("subtitles", 'must be "manual" or "manual+auto"');
     cfg.subtitles = raw.subtitles as Config["subtitles"];
   }
-  if (raw.bitrate !== undefined) {
-    if (raw.bitrate !== "adaptive" && raw.bitrate !== "fixed") fail("bitrate", 'must be "adaptive" or "fixed"');
-    cfg.bitrate = raw.bitrate as Config["bitrate"];
-  }
   if (raw.providers !== undefined) {
     if (!Array.isArray(raw.providers)) return fail("providers", "must be an array");
     const seen = new Set<string>();
-    cfg.providers = raw.providers.map((p, i) => parseProvider(p, i, seen));
+    cfg.providers = raw.providers
+      .map((p, i) => parseProvider(p, i, seen, warnings))
+      .filter((p): p is ProviderConfig => p !== null);
   }
   if (raw.readeck !== undefined && raw.readeck !== null) {
     const r = raw.readeck;
@@ -170,7 +150,7 @@ export function parseConfig(raw: unknown): Config {
   return cfg;
 }
 
-export async function loadConfig(path: string): Promise<Config | null> {
+export async function loadConfig(path: string, warnings?: string[]): Promise<Config | null> {
   let text: string;
   try {
     text = await readFile(path, "utf8");
@@ -184,9 +164,10 @@ export async function loadConfig(path: string): Promise<Config | null> {
   } catch (e) {
     throw new UserError(`config: ${path}: invalid JSON (${(e as Error).message})`);
   }
-  return parseConfig(raw);
+  return parseConfig(raw, warnings);
 }
 
+/** Writes the parsed config: after a migration this is the cleaned one. */
 export async function saveConfig(path: string, cfg: Config): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, JSON.stringify(cfg, null, 2) + "\n");
@@ -207,7 +188,11 @@ export function setValue(cfg: Config, key: string, value: unknown): Config {
   } else {
     throw new UserError(`config: ${key}: unknown key`);
   }
-  return parseConfig(next);
+  // `cfg` is already clean, so any warning comes from the new value: refuse it rather than drop it silently.
+  const warnings: string[] = [];
+  const parsed = parseConfig(next, warnings);
+  if (warnings.length) throw new UserError(`config: ${key}: ${warnings.join("; ")}`);
+  return parsed;
 }
 
 export function keySource(ref: KeyRef): string | null {

@@ -24,7 +24,7 @@ test("expandHome", () => {
 
 test("DEFAULT_CONFIG", () => {
   expect(DEFAULT_CONFIG).toEqual({ outputDir: "~/Documents/video-summaries", summaryLanguage: "auto", summaryLength: "medium",
-    subtitles: "manual", bitrate: "adaptive", providers: [], readeck: null });
+    subtitles: "manual", providers: [], readeck: null });
 });
 
 test("summaryLength: short, medium, long or <N>m with N in 1..60", () => {
@@ -38,8 +38,7 @@ test("summaryLength: short, medium, long or <N>m with N in 1..60", () => {
 
 test("parseConfig: недостающие поля добиваются умолчаниями", () => {
   expect(parseConfig({})).toEqual(DEFAULT_CONFIG);
-  const c = parseConfig({ bitrate: "fixed", providers: [{ name: "w", type: "whisperx", url: "https://a/" }] });
-  expect(c.bitrate).toBe("fixed");
+  const c = parseConfig({ providers: [{ name: "w", type: "whisperx", url: "https://a/" }] });
   expect(c.outputDir).toBe(DEFAULT_CONFIG.outputDir);
   expect(c.providers[0]).toMatchObject({ name: "w", url: "https://a" });
   expect(parseConfig({ readeck: { url: "https://r", keyEnv: "K" } }).readeck).toEqual({ url: "https://r", keyEnv: "K" });
@@ -48,9 +47,6 @@ test("parseConfig: недостающие поля добиваются умол
 
 test("parseConfig: ошибки с путём к полю", () => {
   expect(() => parseConfig({ providers: {} })).toThrow("config: providers: must be an array");
-  expect(() => parseConfig({ providers: [{ name: "x", type: "openai-compatible", preset: "foo" }] }))
-    .toThrow('config: providers[0].preset: unknown preset "foo" (groq, openai)');
-  expect(() => parseConfig({ bitrate: "fast" })).toThrow('config: bitrate: must be "adaptive" or "fixed"');
   expect(() => parseConfig({ providers: [{ name: "a", type: "whisperx", url: "u" }, { name: "a", type: "whisperx", url: "v" }] }))
     .toThrow('config: providers[1].name: duplicate "a"');
   expect(() => parseConfig({ nope: 1 })).toThrow('config: nope: unknown key');
@@ -58,8 +54,6 @@ test("parseConfig: ошибки с путём к полю", () => {
   expect(() => parseConfig({ providers: [{ name: "a", type: "grpc" }] })).toThrow("config: providers[0].type: unknown type");
   expect(() => parseConfig({ providers: [{ name: "a", type: "whisperx" }] })).toThrow("config: providers[0].url: required");
   expect(() => parseConfig({ providers: [{ name: "a", type: "openai-compatible" }] })).toThrow("config: providers[0].url: required");
-  expect(() => parseConfig({ providers: [{ name: "a", type: "openai-compatible", preset: "groq", maxBytes: -1 }] }))
-    .toThrow("config: providers[0].maxBytes: must be a positive number or null");
   expect(() => parseConfig({ readeck: {} })).toThrow("config: readeck.url: required");
   expect(() => parseConfig(5)).toThrow(UserError);
 });
@@ -70,8 +64,8 @@ test("loadConfig: нет файла → null; битый JSON → UserError с �
   writeFileSync(bad, "{oops");
   await expect(loadConfig(bad)).rejects.toThrow(`config: ${bad}: invalid JSON`);
   const wrong = join(tmp, "wrong.json");
-  writeFileSync(wrong, '{"bitrate":"fast"}');
-  await expect(loadConfig(wrong)).rejects.toThrow('bitrate: must be "adaptive" or "fixed"');
+  writeFileSync(wrong, '{"subtitles":"fast"}');
+  await expect(loadConfig(wrong)).rejects.toThrow('subtitles: must be "manual" or "manual+auto"');
   const p = join(tmp, "deep", "dir", "c.json");
   await saveConfig(p, DEFAULT_CONFIG);
   expect(readFileSync(p, "utf8")).toBe(JSON.stringify(DEFAULT_CONFIG, null, 2) + "\n");
@@ -83,13 +77,13 @@ test("setValue: вложенный ключ readeck.url, providers целико�
   expect(a.readeck).toEqual({ url: "https://r" });
   expect(setValue(a, "readeck.keyFile", "~/k").readeck).toEqual({ url: "https://r", keyFile: "~/k" });
   expect(setValue(a, "readeck", null).readeck).toBeNull();
-  expect(setValue(DEFAULT_CONFIG, "bitrate", "fixed").bitrate).toBe("fixed");
   const p = [{ name: "w", type: "whisperx", url: "https://a" }];
   expect(setValue(DEFAULT_CONFIG, "providers", p).providers).toEqual(p as any);
   expect(DEFAULT_CONFIG.readeck).toBeNull(); // не мутирует
   expect(() => setValue(DEFAULT_CONFIG, "nope", 1)).toThrow(UserError);
-  expect(() => setValue(DEFAULT_CONFIG, "bitrate.x", 1)).toThrow(UserError);
-  expect(() => setValue(DEFAULT_CONFIG, "bitrate", "fast")).toThrow("config: bitrate:");
+  expect(() => setValue(DEFAULT_CONFIG, "subtitles.x", 1)).toThrow(UserError);
+  expect(() => setValue(DEFAULT_CONFIG, "subtitles", "fast")).toThrow("config: subtitles:");
+  expect(() => setValue(DEFAULT_CONFIG, "bitrate", "fixed")).toThrow("config: bitrate: unknown key");
 });
 
 test("readKey: keyFile с ~ и trim; keyEnv; ни того ни другого → null; keySource для сообщений", async () => {
@@ -135,29 +129,86 @@ test("keySource: both keyFile and keyEnv -> 'file X or env Y'", () => {
 
 test("parseConfig: url/model requirements with field paths", () => {
   expect(() => parseConfig({ providers: [{ name: "a", type: "openai-compatible", url: "http://h/v1" }] }))
-    .toThrow("config: providers[0].model: required without preset");
+    .toThrow("config: providers[0].model: required");
   expect(() => parseConfig({ providers: [{ name: "a", type: "openai-compatible", url: "/", model: "m" }] }))
     .toThrow("config: providers[0].url: required");
   expect(() => parseConfig({ providers: [{ name: "a", type: "whisperx", url: "///" }] }))
     .toThrow("config: providers[0].url: required");
-  expect(() => parseConfig({ providers: [{ name: "a", type: "openai-compatible", preset: "groq", url: "/" }] }))
+  expect(() => parseConfig({ providers: [{ name: "a", type: "openai-compatible", model: "m" }] }))
     .toThrow("config: providers[0].url: required");
   expect(() => parseConfig({ readeck: { url: "/" } })).toThrow("config: readeck.url: required");
-  expect(parseConfig({ providers: [{ name: "a", type: "openai-compatible", preset: "openai" }] }).providers[0]!.model).toBeUndefined();
 });
 
-test("#2: settings that would be ignored are rejected with a field path", () => {
-  const p = (x: object) => parseConfig({ providers: [{ name: "x", ...x }] });
-  expect(() => p({ type: "openai-compatible", preset: "groq", diarize: true }))
-    .toThrow("config: providers[0].diarize: speaker labels are only supported by whisperx and the openai preset");
-  expect(() => p({ type: "openai-compatible", url: "http://l/v1", model: "m", diarize: true }))
-    .toThrow("config: providers[0].diarize: speaker labels are only supported by whisperx and the openai preset");
-  expect(() => p({ type: "openai-compatible", preset: "openai", tier: "dev" }))
-    .toThrow('config: providers[0].tier: only allowed with preset "groq"');
-  expect(() => p({ type: "whisperx", url: "http://w", tier: "free" }))
-    .toThrow('config: providers[0].tier: only allowed with preset "groq"');
-  // still valid
-  expect(() => p({ type: "whisperx", url: "http://w", diarize: true })).not.toThrow();
-  expect(() => p({ type: "openai-compatible", preset: "openai", diarize: true })).not.toThrow();
-  expect(() => p({ type: "openai-compatible", preset: "groq", tier: "dev", diarize: false })).not.toThrow();
+test("migration: groq/openai presets skipped with a warning, whisperx kept", () => {
+  const w: string[] = [];
+  const c = parseConfig({ bitrate: "fixed", providers: [
+    { name: "wx", type: "whisperx", url: "https://a" },
+    { name: "groq", type: "openai-compatible", preset: "groq", tier: "free", keyFile: "~/g.key" },
+  ] }, w);
+  expect(c.providers).toEqual([{ name: "wx", type: "whisperx", url: "https://a" }]);
+  expect(c).not.toHaveProperty("bitrate");
+  expect(w).toEqual([
+    "bitrate: removed in v0.4.0 — ignored",
+    'providers[1] "groq": cloud providers were removed in v0.4.0 — skipped',
+  ]);
+  // a skipped provider does not hold its name: a later provider may reuse it
+  const c2 = parseConfig({ providers: [
+    { name: "o", type: "openai-compatible", preset: "openai", diarize: true },
+    { name: "o", type: "openai-compatible", url: "http://h/v1", model: "m" },
+  ] });
+  expect(c2.providers.map((p) => p.name)).toEqual(["o"]);
+  // without a warnings array parsing is just as lenient
+  expect(parseConfig({ bitrate: "wat" })).toEqual(DEFAULT_CONFIG);
+});
+
+test("migration: maxBytes/maxSeconds/local on whisperx and diarize on openai-compatible are ignored with warnings", () => {
+  const w: string[] = [];
+  const c = parseConfig({ providers: [
+    { name: "wx", type: "whisperx", url: "https://a", tier: "free", maxBytes: 25_000_000, maxSeconds: null, local: true, diarize: false },
+    { name: "own", type: "openai-compatible", url: "http://h/v1", model: "m", local: true, diarize: true, maxBytes: -1 },
+  ] }, w);
+  expect(c.providers).toEqual([
+    { name: "wx", type: "whisperx", url: "https://a", diarize: false },
+    { name: "own", type: "openai-compatible", url: "http://h/v1", model: "m" },
+  ]);
+  expect(w).toEqual([
+    "providers[0].tier: removed in v0.4.0 — ignored",
+    "providers[0].maxBytes: removed in v0.4.0 — ignored",
+    "providers[0].maxSeconds: removed in v0.4.0 — ignored",
+    "providers[0].local: removed in v0.4.0 — ignored",
+    "providers[1].maxBytes: removed in v0.4.0 — ignored",
+    "providers[1].local: removed in v0.4.0 — ignored",
+    "providers[1].diarize: removed in v0.4.0 — ignored",
+  ]);
+  // still strict about keys that never existed and about the remaining fields
+  expect(() => parseConfig({ providers: [{ name: "wx", type: "whisperx", url: "https://a", nope: 1 }] }))
+    .toThrow("config: providers[0].nope: unknown key");
+  expect(() => parseConfig({ providers: [{ name: "wx", type: "whisperx", url: "https://a", diarize: "yes" }] }))
+    .toThrow("config: providers[0].diarize: must be true or false");
+});
+
+test("saveConfig after migration writes the cleaned config", async () => {
+  const p = join(tmp, "old.json");
+  writeFileSync(p, JSON.stringify({ bitrate: "adaptive", providers: [
+    { name: "wx", type: "whisperx", url: "https://a", local: true },
+    { name: "groq", type: "openai-compatible", preset: "groq", keyEnv: "G" },
+  ] }));
+  const w: string[] = [];
+  const cfg = (await loadConfig(p, w))!;
+  expect(w).toHaveLength(3);
+  await saveConfig(p, setValue(cfg, "summaryLength", "short"));
+  const raw = JSON.parse(readFileSync(p, "utf8"));
+  expect(raw).not.toHaveProperty("bitrate");
+  expect(raw.providers).toEqual([{ name: "wx", type: "whisperx", url: "https://a" }]);
+  expect(raw.summaryLength).toBe("short");
+  const again: string[] = [];
+  await loadConfig(p, again);
+  expect(again).toEqual([]);
+});
+
+test("setValue: a value with removed settings is rejected, nothing silently dropped", () => {
+  expect(() => setValue(DEFAULT_CONFIG, "providers", [{ name: "groq", type: "openai-compatible", preset: "groq" }]))
+    .toThrow('config: providers: providers[0] "groq": cloud providers were removed in v0.4.0 — skipped');
+  expect(() => setValue(DEFAULT_CONFIG, "providers", [{ name: "wx", type: "whisperx", url: "https://a", maxBytes: 5 }]))
+    .toThrow("config: providers: providers[0].maxBytes: removed in v0.4.0 — ignored");
 });

@@ -3,35 +3,24 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveProvider, type ResolvedProvider } from "../../src/asr/presets";
-import { type Candidate, chooseProvider, probeProviders, transcribeWith } from "../../src/asr/select";
-import { type Fetcher, UserError } from "../../src/types";
+import { type Candidate, chooseProvider, probeProviders, type SelectInput, transcribeWith } from "../../src/asr/select";
+import type { Fetcher } from "../../src/types";
 
-const groq = resolveProvider({ name: "groq", type: "openai-compatible", preset: "groq", tier: "free", keyEnv: "GROQ_API_KEY" });
+const own = resolveProvider({ name: "own", type: "openai-compatible", url: "http://own/v1", model: "m", keyEnv: "OWN_KEY" });
 const wx = resolveProvider({ name: "wx", type: "whisperx", url: "https://wx" });
 const ok = (p: ResolvedProvider): Candidate => ({ provider: p, available: true, keyMissing: null });
-const base = { durationSec: 5400, kbps: 28, privateSource: false, allowCloud: false };
+const base: Omit<SelectInput, "candidates"> = { durationSec: 5400, language: null, acceptSlow: false, estimate: () => null };
 
 test("chooseProvider: first fitting in order", () => {
-  expect(chooseProvider({ ...base, candidates: [ok(wx), ok(groq)] })).toEqual({ provider: wx });
+  expect(chooseProvider({ ...base, candidates: [ok(wx), ok(own)] })).toEqual({ provider: wx });
+  expect(chooseProvider({ ...base, candidates: [ok(own), ok(wx)] })).toEqual({ provider: own });
 });
 
-test("chooseProvider: reason per provider", () => {
-  const r = chooseProvider({ ...base, candidates: [{ ...ok(wx), available: false }, { ...ok(groq), keyMissing: "env GROQ_API_KEY" }] });
-  expect(r).toEqual({ error: "no ASR provider fits: wx: not reachable; groq: no API key (env GROQ_API_KEY)" });
-});
-
-test("chooseProvider: duration and size in message — h:mm:ss and MB", () => {
-  expect(chooseProvider({ ...base, durationSec: 9000, candidates: [ok(groq)] }))
-    .toEqual({ error: "no ASR provider fits: groq: 2:30:00 exceeds duration limit 1:56:40" });
-  expect(chooseProvider({ ...base, durationSec: 6500, kbps: 32, candidates: [ok(groq)] }))
-    .toEqual({ error: "no ASR provider fits: groq: ~26.0 MB exceeds 96% of file limit 25.0 MB" });
-});
-
-test("chooseProvider: cloud + privateSource without allowCloud blocked; local allowed", () => {
-  expect(chooseProvider({ ...base, privateSource: true, candidates: [ok(groq)] }))
-    .toEqual({ error: "no ASR provider fits: groq: cloud provider, needs --allow-cloud" });
-  expect(chooseProvider({ ...base, privateSource: true, candidates: [ok(groq), ok(wx)] })).toEqual({ provider: wx });
-  expect(chooseProvider({ ...base, privateSource: true, allowCloud: true, candidates: [ok(groq)] })).toEqual({ provider: groq });
+test("chooseProvider: reasons are only availability and key", () => {
+  const r = chooseProvider({ ...base, candidates: [{ ...ok(wx), available: false }, { ...ok(own), keyMissing: "cannot read file ~/k (EISDIR)" }] });
+  expect(r).toEqual({ error: "no ASR provider fits: wx: not reachable; own: no API key (cannot read file ~/k (EISDIR))" });
+  // no duration or size limits any more: a 10-hour recording fits
+  expect(chooseProvider({ ...base, durationSec: 36_000, candidates: [ok(own)] })).toEqual({ provider: own });
 });
 
 test("chooseProvider: empty list", () => {
@@ -39,51 +28,37 @@ test("chooseProvider: empty list", () => {
     .toEqual({ error: "no ASR providers configured — run setup (see references/setup.md)" });
 });
 
-test("probeProviders: whisperx via /health, local openai via /models, cloud not pinged; keyMissing from keySource", async () => {
-  const loc = resolveProvider({ name: "loc", type: "openai-compatible", url: "http://l/v1", model: "m", local: true });
+test("probeProviders: openai-compatible always probed via /models, whisperx via /health; a key is optional", async () => {
   const urls: string[] = [];
   const f: Fetcher = async (u) => (urls.push(u), new Response("{}", { status: u.endsWith("/health") ? 502 : 200 }));
-  const r = await probeProviders([wx, loc, groq], f, {}, "/nohome");
-  expect(urls.sort()).toEqual(["http://l/v1/models", "https://wx/health"]);
-  expect(r.map((c) => [c.provider.name, c.available, c.keyMissing])).toEqual([
-    ["wx", false, null], ["loc", true, null], ["groq", true, "env GROQ_API_KEY"],
-  ]);
-  const r2 = await probeProviders([groq], f, { GROQ_API_KEY: "x" }, "/nohome");
-  expect(r2[0]!.keyMissing).toBeNull();
-  const nokey = resolveProvider({ name: "n", type: "openai-compatible", preset: "groq" });
-  expect((await probeProviders([nokey], f, {}, "/h"))[0]!.keyMissing).toBe("no key configured");
+  const r = await probeProviders([wx, own], f, {}, "/nohome");
+  expect(urls.sort()).toEqual(["http://own/v1/models", "https://wx/health"]);
+  expect(r.map((c) => [c.provider.name, c.available, c.keyMissing])).toEqual([["wx", false, null], ["own", true, null]]);
+  const down: Fetcher = async () => new Response("", { status: 404 });
+  expect((await probeProviders([own], down, {}, "/nohome"))[0]!.available).toBe(false);
 });
 
-test("transcribeWith: reads key file, dispatches by type; missing key -> UserError without leaking", async () => {
+test("probeProviders: the key, when set, goes to the /models probe", async () => {
+  let auth: string | undefined;
+  const f: Fetcher = async (_u, init) => (auth = (init?.headers as Record<string, string>).Authorization, new Response("{}"));
+  await probeProviders([own], f, { OWN_KEY: "k1" }, "/nohome");
+  expect(auth).toBe("Bearer k1");
+});
+
+test("transcribeWith: reads key file, dispatches by type; no key -> no Authorization header", async () => {
   const dir = await mkdtemp(join(tmpdir(), "t6-"));
   await writeFile(join(dir, "tok"), "secret-token\n");
   const audio = join(import.meta.dir, "../fixtures/sample.ru.srt");
   const verbose = await Bun.file(join(import.meta.dir, "../fixtures/groq-verbose.json")).text();
   let auth: string | undefined, url = "";
   const f: Fetcher = async (u, init) => (url = u, auth = (init?.headers as Record<string, string>).Authorization, new Response(verbose));
-  const p = resolveProvider({ name: "g", type: "openai-compatible", preset: "groq", keyFile: join(dir, "tok") });
+  const p = resolveProvider({ name: "g", type: "openai-compatible", url: "http://own/v1", model: "m", keyFile: join(dir, "tok") });
   const r = await transcribeWith(p, audio, { language: null, diarize: false }, f, {}, dir);
   expect(auth).toBe("Bearer secret-token");
-  expect(url).toContain("/audio/transcriptions");
+  expect(url).toBe("http://own/v1/audio/transcriptions");
   expect(r.provider).toBe("g");
-  const err = await transcribeWith(groq, audio, { language: null, diarize: false }, f, {}, dir).catch((e) => e);
-  expect(err).toBeInstanceOf(UserError);
-  expect(err.message).toBe("groq: no API key (env GROQ_API_KEY)");
-});
-
-test("chooseProvider: limits inclusive, size with 4% headroom (7000 s fits Groq free; exactly 24_000_000 bytes fits, above doesn't)", () => {
-  expect(chooseProvider({ ...base, durationSec: 7000, kbps: 16, candidates: [ok(groq)] })).toEqual({ provider: groq });
-  // 6000 s at 32 kbps = 24_000_000 bytes = 96% of 25 MB
-  expect(chooseProvider({ ...base, durationSec: 6000, kbps: 32, candidates: [ok(groq)] })).toEqual({ provider: groq });
-  expect(chooseProvider({ ...base, durationSec: 6001, kbps: 32, candidates: [ok(groq)] }))
-    .toEqual({ error: "no ASR provider fits: groq: ~24.0 MB exceeds 96% of file limit 25.0 MB" });
-});
-
-test("chooseProvider: order is duration -> size -> privacy", () => {
-  expect(chooseProvider({ ...base, durationSec: 9000, privateSource: true, candidates: [ok(groq)] }))
-    .toEqual({ error: "no ASR provider fits: groq: 2:30:00 exceeds duration limit 1:56:40" });
-  expect(chooseProvider({ ...base, durationSec: 6500, kbps: 32, privateSource: true, candidates: [ok(groq)] }))
-    .toEqual({ error: "no ASR provider fits: groq: ~26.0 MB exceeds 96% of file limit 25.0 MB" });
+  await transcribeWith(own, audio, { language: null, diarize: false }, f, {}, dir);
+  expect(auth).toBeUndefined();
 });
 
 test("transcribeWith: whisperx dispatch -> /asr with Speaker labels", async () => {
@@ -97,17 +72,18 @@ test("transcribeWith: whisperx dispatch -> /asr with Speaker labels", async () =
   expect(r.provider).toBe("wx");
 });
 
-test("probeProviders: unreadable or malformed key -> keyMissing with the reason, no throw", async () => {
+test("probeProviders: unreadable or malformed key -> keyMissing with the reason, not probed, no throw", async () => {
   const dir = await mkdtemp(join(tmpdir(), "t6-"));
   await writeFile(join(dir, "bad.key"), "sk-LEAKCANARY\nmore\n");
-  const f: Fetcher = async () => new Response("{}");
-  const unreadable = resolveProvider({ name: "u", type: "openai-compatible", preset: "groq", keyFile: dir });
-  const malformed = resolveProvider({ name: "m", type: "openai-compatible", preset: "groq", keyFile: join(dir, "bad.key") });
-  const r = await probeProviders([unreadable, malformed, groq], f, {}, dir);
+  const urls: string[] = [];
+  const f: Fetcher = async (u) => (urls.push(u), new Response("{}"));
+  const unreadable = resolveProvider({ name: "u", type: "openai-compatible", url: "http://u/v1", model: "m", keyFile: dir });
+  const malformed = resolveProvider({ name: "m", type: "openai-compatible", url: "http://m/v1", model: "m", keyFile: join(dir, "bad.key") });
+  const r = await probeProviders([unreadable, malformed], f, {}, dir);
+  expect(urls).toEqual([]);
   expect(r.map((c) => c.keyMissing)).toEqual([
     `cannot read file ${dir} (EISDIR)`,
     `key in file ${join(dir, "bad.key")} contains whitespace or control characters`,
-    "env GROQ_API_KEY",
   ]);
 });
 

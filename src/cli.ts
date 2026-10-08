@@ -2,7 +2,6 @@ import { stat } from "node:fs/promises";
 import { type Config, DEFAULT_CONFIG, configPath, loadConfig, saveConfig, setValue } from "./config";
 import { type DepsReport, buildReport, probeDeps } from "./deps";
 import { fetchCmd } from "./fetch-cmd";
-import { limitsReport } from "./limits";
 import { resolveInputPath } from "./paths";
 import { resolveProvider } from "./asr/presets";
 import { probeProviders } from "./asr/select";
@@ -16,8 +15,8 @@ export type CliDeps = {
 };
 
 const USAGE =
-  "usage: video-summary check | config path|get [key]|init [--force]|set <key> <json>|limits | " +
-  "fetch <url|path> [--no-diarize] [--allow-cloud] [--force] | finalize <dir> | readeck <dir>";
+  "usage: video-summary check | config path|get [key]|init [--force]|set <key> <json> | " +
+  "fetch <url|path> [--no-diarize] [--force] | finalize <dir> | readeck <dir>";
 const NO_CONFIG = "no config — run setup (see references/setup.md)";
 
 async function requireConfig(path: string): Promise<Config> {
@@ -28,10 +27,11 @@ async function requireConfig(path: string): Promise<Config> {
 
 async function check(d: CliDeps, path: string): Promise<unknown> {
   const depsReport = buildReport(await probeDeps(d.run), d.platform, d.runtime, d.now, d.has);
-  const config: { path: string; exists: boolean; valid: boolean; error?: string } = { path, exists: false, valid: false };
+  const config: { path: string; exists: boolean; valid: boolean; error?: string; warnings: string[] } =
+    { path, exists: false, valid: false, warnings: [] };
   let cfg: Config | null = null;
   try {
-    cfg = await loadConfig(path);
+    cfg = await loadConfig(path, config.warnings);
     config.exists = cfg !== null;
     config.valid = cfg !== null;
   } catch (e) {
@@ -89,10 +89,6 @@ async function configCmd(args: string[], d: CliDeps, path: string): Promise<unkn
       await saveConfig(path, next);
       return { path, key: rest[0] };
     }
-    case "limits": {
-      const cfg = await requireConfig(path);
-      return { bitrate: cfg.bitrate, rows: limitsReport(cfg.providers.map(resolveProvider)) };
-    }
     default:
       throw new UserError(USAGE);
   }
@@ -110,9 +106,8 @@ export async function main(argv: string[], d: CliDeps): Promise<unknown> {
       const src = rest.find((a) => !a.startsWith("--"));
       if (!src) throw new UserError(USAGE);
       const cfg = await requireConfig(path);
-      const flags = {
-        diarize: !rest.includes("--no-diarize"), allowCloud: rest.includes("--allow-cloud"), force: rest.includes("--force"),
-      };
+      // --allow-cloud (v0.3 and older SKILL.md) is accepted and ignored, like any other unknown flag.
+      const flags = { diarize: !rest.includes("--no-diarize"), force: rest.includes("--force") };
       return fetchCmd(src, flags, { run: d.run, fetch: d.fetch, cfg, env: d.env, now: d.now, cwd: d.cwd, home: d.home });
     }
     case "finalize": {
