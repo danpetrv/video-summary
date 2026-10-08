@@ -107,6 +107,10 @@ async function recognize(
       const asr = await transcribeWith(provider, ogg, { language, diarize: flags.diarize }, d);
       if (provider.type === "local" && asr.device && asr.elapsedMs !== undefined) {
         await noteSpeed(speedFile, speedKey(provider, asr.device), durationSec, asr.elapsedMs);
+        // Planned on the GPU, ended on CPU: the estimate reads the planned key, so it learns the whole path.
+        if (asr.plannedDevice && asr.plannedDevice !== asr.device && asr.pathElapsedMs !== undefined) {
+          await noteSpeed(speedFile, speedKey(provider, asr.plannedDevice), durationSec, asr.pathElapsedMs);
+        }
       }
       // Non-fatal problems of the provider that succeeded (GPU failed, CPU used) are reported alongside.
       return { asr, failed: [...failed, ...(asr.notes ?? [])] };

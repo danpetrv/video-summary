@@ -32,9 +32,12 @@ Optional fields: `"device": "cpu"` forces the CPU even when a GPU build is insta
   what is installed (no network). `check` lists `parakeet` in `deps.missing` until it is
   installed.
 - **Device:** Apple Silicon uses Metal; Linux uses Vulkan when `libvulkan.so.1` is present
-  (`libvulkan1` package; `check` suggests it when `nvidia-smi` exists), otherwise the
-  CPU; Intel Macs use the CPU. If the GPU run fails (other than by timing out), the same audio is recognized on the
-  CPU and `asr_failed` carries a note such as `local: GPU run failed (...), used CPU`.
+  (`libvulkan1` package; `check` suggests it when `nvidia-smi` exists) and a GPU device is
+  available, otherwise the CPU; Intel Macs use the CPU. With the library but no usable GPU
+  device the Vulkan build runs on the CPU by itself and `asr_failed` carries
+  `local: no GPU device found, ran on CPU`. If the GPU run fails (other than by timing out),
+  the same audio is recognized on the CPU and `asr_failed` carries a note such as
+  `local: GPU run failed (...), used CPU`.
 - **Languages:** 25 European languages: bg, hr, cs, da, nl, en, et, fi, fr, de, el, hu,
   it, lv, lt, mt, pl, pt, ro, sk, sl, es, sv, ru, uk. If the video's language is known
   and not in this list, the local provider is skipped with `language <code> not

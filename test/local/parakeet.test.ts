@@ -106,7 +106,7 @@ test("transcribe: converts to 16 kHz mono wav, runs parakeet-cli transcribe --mo
   ]);
   expect(r).toEqual({
     cues: wordsToCues(JSON.parse(fixture).words), provider: "local", diarized: false, speakers: 0, language: null, device: "cpu",
-    elapsedMs: 1_000,
+    elapsedMs: 1_000, plannedDevice: "cpu", pathElapsedMs: 1_000,
   });
   // the wav is a temporary file
   expect(existsSync(wav)).toBe(false);
@@ -146,11 +146,15 @@ test("transcribe: GPU build fails -> PARAKEET_DEVICE=cpu with the same Metal bui
   expect(r.notes).toEqual(["local: GPU run failed (ggml_metal_init: error: failed to create command queue), used CPU"]);
 });
 
+// What the pinned v0.6.1 Vulkan build prints when it finds a GPU (observed on a real run).
+const VULKAN_OK = "ggml_vulkan: Found 1 Vulkan devices:\n[parakeet] pk::Backend using device: Vulkan0\n";
+const vulkanOk = (bin: string) => ({ code: 0, stdout: fixture, stderr: bin.includes("vulkan") ? VULKAN_OK : "" });
+
 test("transcribe: the GPU build works -> device gpu, no notes; the note uses the provider name", async () => {
-  const m = machine({ builds: ["linux-vulkan-x64", "linux-cpu-x64"], vulkanLib: true });
+  const m = machine({ builds: ["linux-vulkan-x64", "linux-cpu-x64"], vulkanLib: true, cli: vulkanOk });
   const r = await transcribeParakeet(m.ogg, local(), m.d);
   expect(m.parakeetCalls().map((c) => c.cmd[0])).toEqual([m.paths.cli("linux-vulkan-x64")]);
-  expect([r.device, r.notes]).toEqual(["gpu", undefined]);
+  expect([r.device, r.notes, r.plannedDevice]).toEqual(["gpu", undefined, "gpu"]);
 
   const failing = machine({
     builds: ["linux-vulkan-x64", "linux-cpu-x64"], vulkanLib: true,
@@ -160,6 +164,25 @@ test("transcribe: the GPU build works -> device gpu, no notes; the note uses the
   const r2 = await transcribeParakeet(failing.ogg, named, failing.d);
   expect(r2.provider).toBe("parakeet");
   expect(r2.notes).toEqual(["parakeet: GPU run failed (exit code 1), used CPU"]);
+});
+
+test("transcribe: the Vulkan build exits 0 without using a GPU device -> device cpu, note says so, no second run", async () => {
+  // observed: empty stderr (no Vulkan driver), "No devices found" (software Vulkan only), PARAKEET_DEVICE fallback
+  for (const stderr of ["", "ggml_vulkan: No devices found.\n", "[parakeet] pk::Backend: PARAKEET_DEVICE=Vulkan0 not found; falling back to CPU\n"]) {
+    const m = machine({
+      builds: ["linux-vulkan-x64", "linux-cpu-x64"], vulkanLib: true, cli: () => ({ code: 0, stdout: fixture, stderr }),
+    });
+    const r = await transcribeParakeet(m.ogg, local(), m.d);
+    expect(m.parakeetCalls().map((c) => c.cmd[0])).toEqual([m.paths.cli("linux-vulkan-x64")]);
+    expect([r.device, r.plannedDevice, r.notes]).toEqual(["cpu", "gpu", ["local: no GPU device found, ran on CPU"]]);
+    expect(r.cues.length).toBe(4);
+  }
+});
+
+test("transcribe: the Metal build keeps the exit-code rule: exit 0 is a GPU run whatever stderr says", async () => {
+  const m = machine({ builds: ["macos-metal-arm64"], platform: "darwin", arch: "arm64" });
+  const r = await transcribeParakeet(m.ogg, local(), m.d);
+  expect([r.device, r.plannedDevice, r.notes]).toEqual(["gpu", "gpu", undefined]);
 });
 
 test("transcribe: device cpu in config -> only the CPU run, no note", async () => {
@@ -253,4 +276,6 @@ test("transcribe: elapsedMs is the process time of the run that succeeded, not f
   };
   const r = await transcribeParakeet(m.ogg, local(), { ...m.d, run, clock: () => now });
   expect([r.device, r.elapsedMs]).toEqual(["cpu", 20_000]);
+  // the whole path planned on the GPU: failed GPU run + CPU run, still without ffmpeg
+  expect([r.plannedDevice, r.pathElapsedMs]).toEqual(["gpu", 70_000]);
 });

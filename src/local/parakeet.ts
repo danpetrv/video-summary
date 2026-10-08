@@ -17,6 +17,9 @@ const SENTENCE_END = /[.?!…]$/;
 const UNK = "<unk>";
 // Timestamps are centiseconds as floats: 4.1 - 3.1 = 0.9999999999999996 must count as 1.0.
 const EPS = 1e-6;
+// The Vulkan build with no usable device falls back to CPU in-process and exits 0; only this line
+// (printed by the pinned v0.6.1 build when it picks a GPU) tells the two apart.
+const VULKAN_DEVICE = /pk::Backend using device: Vulkan\d+/;
 
 export type Word = { w: string; start: number; end: number };
 
@@ -87,6 +90,7 @@ export const plannedDevice = (p: LocalProvider, d: Omit<ParakeetDeps, "run">): "
 /**
  * ogg -> 16 kHz mono wav (parakeet-cli reads only wav) -> `parakeet-cli --vad --json` -> cues.
  * GPU first when its build is installed; if that run fails, the CPU run follows and `notes` says so.
+ * A Vulkan run that exits 0 without reporting a GPU device ran on CPU: `device` is cpu, `notes` says so.
  * `language` is left null: the caller knows it, the engine does not report it.
  */
 export async function transcribeParakeet(ogg: string, p: LocalProvider, d: ParakeetDeps): Promise<AsrResult> {
@@ -96,14 +100,18 @@ export async function transcribeParakeet(ogg: string, p: LocalProvider, d: Parak
   const threads = String(Math.min(availableParallelism(), 8));
 
   const clock = d.clock ?? Date.now;
-  // Each run is timed on its own: the speed store wants the process time of the run that succeeded.
+  // Each run is timed on its own: the speed store wants the process time of the run that succeeded
+  // and, under the planned device, the whole path from the first run (a failed GPU run included).
+  let pathStarted: number | null = null;
   const transcribe = async (build: BuildId, env?: Record<string, string>) => {
     const started = clock();
+    pathStarted ??= started;
     const r = await d.run(
       [paths.cli(build), "transcribe", "--model", paths.model, "--input", wav, "--vad", "--json", "--threads", threads],
       env ? { timeoutMs: LOCAL_TIMEOUT_MS, env } : { timeoutMs: LOCAL_TIMEOUT_MS },
     );
-    return { ...r, elapsedMs: clock() - started };
+    const ended = clock();
+    return { ...r, elapsedMs: ended - started, pathElapsedMs: ended - pathStarted };
   };
   const timedOut = () => new UserError(`${p.name}: timed out after ${LOCAL_TIMEOUT_MS / 1000} s`);
 
@@ -118,14 +126,19 @@ export async function transcribeParakeet(ogg: string, p: LocalProvider, d: Parak
 
     const notes: string[] = [];
     let device: "gpu" | "cpu" = "cpu";
-    let r: (RunResult & { elapsedMs: number }) | null = null;
+    let r: (RunResult & { elapsedMs: number; pathElapsedMs: number }) | null = null;
     if (gpuBuild) {
       const g = await transcribe(gpuBuild);
       // Two more hours on CPU after a GPU timeout is not worth it.
       if (g.code === 124) throw timedOut();
       if (g.code === 0) {
         r = g;
-        device = "gpu";
+        // Metal keeps the exit-code rule: its stderr wording is not verified.
+        if (gpuBuild.startsWith("linux-vulkan-") && !VULKAN_DEVICE.test(g.stderr)) {
+          notes.push(`${p.name}: no GPU device found, ran on CPU`);
+        } else {
+          device = "gpu";
+        }
       } else {
         notes.push(`${p.name}: GPU run failed (${lastLine(g)}), used CPU`);
       }
@@ -140,6 +153,7 @@ export async function transcribeParakeet(ogg: string, p: LocalProvider, d: Parak
     if (cues.length === 0) throw new UserError(`${p.name}: no speech recognized`);
     const out: AsrResult = {
       cues, provider: p.name, diarized: false, speakers: 0, language: null, device, elapsedMs: r.elapsedMs,
+      plannedDevice: gpuBuild ? "gpu" : "cpu", pathElapsedMs: r.pathElapsedMs,
     };
     if (notes.length) out.notes = notes;
     return out;

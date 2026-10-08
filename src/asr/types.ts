@@ -6,6 +6,8 @@ export type AsrResult = {
   cues: Cue[]; provider: string; diarized: boolean; speakers: number; language: string | null;
   device?: "gpu" | "cpu"; // local engine: where recognition actually ran
   elapsedMs?: number; // local engine: process time of the run that produced the result
+  plannedDevice?: "gpu" | "cpu"; // local engine: the device the run started on (the slow-run estimate reads its speed)
+  pathElapsedMs?: number; // local engine: time from the first engine run to the end of the one that succeeded
   notes?: string[]; // non-fatal problems worth reporting (e.g. GPU failed, CPU used)
 };
 

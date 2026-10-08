@@ -135,6 +135,11 @@ test("local provider not installed -> skipped before any download with the `loca
   expect(hasFormatDownload()).toBe(false);
 });
 
+/** A successful parakeet-cli run; the Vulkan build reports the GPU it used, as the real one does. */
+const parakeetOk = (bin: string) => ({
+  code: 0, stdout: parakeetJson, stderr: bin.includes("vulkan") ? "[parakeet] pk::Backend using device: Vulkan0\n" : "",
+});
+
 /**
  * Fetch deps on a machine where the local engine is installed (CPU build, plus the Vulkan
  * build and library when `gpu`); `cli` answers parakeet-cli runs by binary path.
@@ -154,7 +159,7 @@ function localDeps(env: Env, o: { gpu?: boolean; cli?: (bin: string) => { code: 
   const run: Runner = async (cmd, opts) => {
     if (!cmd[0]!.endsWith("/parakeet-cli")) return d.run(cmd, opts);
     calls.cmds.push(cmd);
-    return (o.cli ?? (() => ({ code: 0, stdout: parakeetJson, stderr: "" })))(cmd[0]!);
+    return (o.cli ?? parakeetOk)(cmd[0]!);
   };
   const vulkanLib = "/usr/lib/x86_64-linux-gnu/libvulkan.so.1";
   return { ...d, run, env: xdg, exists: (p: string) => (p === vulkanLib ? !!o.gpu : p.startsWith(dir) && existsSync(p)) };
@@ -245,7 +250,7 @@ function timedDeps(env: Env, o: { gpuMs: number; cpuMs: number; cli?: (bin: stri
     gpu: true,
     cli: (bin) => {
       now += bin.includes("vulkan") ? o.gpuMs : o.cpuMs;
-      return (o.cli ?? (() => ({ code: 0, stdout: parakeetJson, stderr: "" })))(bin);
+      return (o.cli ?? parakeetOk)(bin);
     },
   });
   const run: Runner = async (cmd, opts) => {
@@ -261,13 +266,27 @@ test("after a local run speed.json is updated under the device that actually ran
   await fetchCmd(URL1, flags, gpu);
   expect(speedsOf(gpu)).toEqual({ "parakeet:ultra:gpu": 21.3 });
 
-  // GPU fails after 50 s, CPU recognizes in 20 s -> the cpu key gets 213 / 20, not 213 / 70
+  // GPU fails after 50 s, CPU recognizes in 20 s -> the cpu key gets 213 / 20, not 213 / 70; the gpu key
+  // (what the slow gate reads on this machine) gets the whole path, 213 / 70
   const fallback = timedDeps({ meta: noMeta, providers: [LOCAL] }, {
     gpuMs: 50_000, cpuMs: 20_000,
     cli: (bin) => bin.includes("vulkan") ? { code: 1, stdout: "", stderr: "boom" } : { code: 0, stdout: parakeetJson, stderr: "" },
   });
   await fetchCmd(URL1, { ...flags, force: true }, fallback);
-  expect(speedsOf(fallback)).toEqual({ "parakeet:ultra:cpu": 10.65 });
+  expect(speedsOf(fallback)).toEqual({ "parakeet:ultra:cpu": 10.65, "parakeet:ultra:gpu": 213 / 70 });
+
+  // the Vulkan build finds no GPU device and recognizes on CPU in 20 s (exit 0): both keys get 213 / 20
+  const noDevice = timedDeps({ meta: noMeta, providers: [LOCAL] }, {
+    gpuMs: 20_000, cpuMs: 99_000, cli: () => ({ code: 0, stdout: parakeetJson, stderr: "ggml_vulkan: No devices found.\n" }),
+  });
+  const nd = await fetchCmd(URL1, { ...flags, force: true }, noDevice);
+  expect(nd.asr_failed).toEqual(["local: no GPU device found, ran on CPU"]);
+  expect(speedsOf(noDevice)).toEqual({ "parakeet:ultra:cpu": 10.65, "parakeet:ultra:gpu": 10.65 });
+
+  // device cpu in config: only the cpu key
+  const cpuOnly = timedDeps({ meta: noMeta, providers: [{ ...LOCAL, device: "cpu" } as ProviderConfig] }, { gpuMs: 1, cpuMs: 20_000 });
+  await fetchCmd(URL1, { ...flags, force: true }, cpuOnly);
+  expect(speedsOf(cpuOnly)).toEqual({ "parakeet:ultra:cpu": 10.65 });
 
   // a failed local run records nothing; neither does the non-local provider that took over
   const empty = JSON.stringify({ text: "", frame_sec: 0.08, words: [], tokens: [] });
