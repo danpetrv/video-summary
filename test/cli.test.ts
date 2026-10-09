@@ -230,7 +230,8 @@ test("local install dispatches to the installer (network error surfaces as UserE
   }).catch((e: Error) => e)) as Error;
   expect(err).toBeInstanceOf(UserError);
   expect(err.message).toBe("could not download parakeet-v0.6.1-bin-linux-cpu-arm64.tar.gz: ECONNREFUSED");
-  expect(urls).toEqual(["https://github.com/mudler/parakeet.cpp/releases/download/v0.6.1/parakeet-v0.6.1-bin-linux-cpu-arm64.tar.gz"]);
+  // the first request and DOWNLOAD_RETRIES retries, then the error
+  expect(urls).toEqual(Array(4).fill("https://github.com/mudler/parakeet.cpp/releases/download/v0.6.1/parakeet-v0.6.1-bin-linux-cpu-arm64.tar.gz"));
 });
 
 test("local without a known subcommand -> usage mentioning local install|status", async () => {

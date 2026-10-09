@@ -123,11 +123,18 @@ async function ensureModel(d: LocalDeps, path: string, pin: ModelPin): Promise<n
 const mismatch = (file: string) =>
   new UserError(`downloaded ${file} does not match the pinned checksum — retry \`local install\``);
 
-async function net<T>(file: string, p: () => Promise<T>): Promise<T> {
+/** A network failure (connection error, stalled stream): retried, unlike HTTP status and checksum errors. */
+class NetDrop extends Error {
+  constructor(readonly tag: string) {
+    super(tag);
+  }
+}
+
+async function net<T>(p: () => Promise<T>): Promise<T> {
   try {
     return await p();
   } catch (e) {
-    throw new UserError(`could not download ${file}: ${netErrorTag(e)}`); // a code, never the message
+    throw new NetDrop(netErrorTag(e)); // a code, never the message
   }
 }
 
@@ -151,36 +158,60 @@ async function idle<T>(p: Promise<T>, ms: number, ac: AbortController): Promise<
   }
 }
 
+/** Retries after a dropped connection or a stall, per file and run; each resumes with `Range`. */
+export const DOWNLOAD_RETRIES = 3;
+
 /**
  * Streams `url` into a unique `<target>.<random>.part` while hashing, checks size and sha256,
  * renames onto `target`. Waiting for headers and for each chunk is limited by the idle timeout.
+ * A network failure is retried up to DOWNLOAD_RETRIES times with `Range: bytes=<received>-`:
+ * `206` appends, `200` starts over. HTTP errors and a size overflow are final.
  * On any failure the .part is removed. Returns the bytes received.
  */
 async function download(d: LocalDeps, url: string, target: string, pin: { size: number; sha256: string }, file: string): Promise<number> {
   const part = `${target}.${randomBytes(6).toString("hex")}.part`;
-  const hash = createHash("sha256");
-  const ac = new AbortController();
   const idleMs = d.downloadIdleMs ?? DOWNLOAD_IDLE_MS;
+  let hash = createHash("sha256");
   let bytes = 0;
   const fh = await open(part, "wx");
   try {
     try {
-      const res = await net(file, () => idle(d.fetch(url, { signal: ac.signal }), idleMs, ac));
-      if (!res.ok) {
-        await res.body?.cancel().catch(() => {});
-        throw new UserError(`could not download ${file}: HTTP ${res.status}`);
-      }
-      const reader = res.body?.getReader();
-      for (;;) {
-        const chunk = reader ? await net(file, () => idle(reader.read(), idleMs, ac)) : { done: true as const, value: undefined };
-        if (chunk.done) break;
-        bytes += chunk.value.length;
-        if (bytes > pin.size) {
-          await reader!.cancel().catch(() => {});
-          throw mismatch(file);
+      for (let attempt = 0; ; attempt++) {
+        const ac = new AbortController(); // per attempt: a stall aborts only its own request
+        try {
+          const headers: Record<string, string> = bytes > 0 ? { range: `bytes=${bytes}-` } : {};
+          const res = await net(() => idle(d.fetch(url, { signal: ac.signal, headers }), idleMs, ac));
+          if (!res.ok) {
+            await res.body?.cancel().catch(() => {});
+            throw new UserError(`could not download ${file}: HTTP ${res.status}`);
+          }
+          if (res.status !== 206 && bytes > 0) {
+            // The server ignored Range and sends the whole file: start over.
+            await fh.truncate(0);
+            bytes = 0;
+            hash = createHash("sha256");
+          }
+          const reader = res.body?.getReader();
+          for (;;) {
+            const chunk = reader ? await net(() => idle(reader.read(), idleMs, ac)) : { done: true as const, value: undefined };
+            if (chunk.done) break;
+            if (bytes + chunk.value.length > pin.size) {
+              await reader!.cancel().catch(() => {});
+              throw mismatch(file);
+            }
+            hash.update(chunk.value);
+            // Explicit position: after a truncate the descriptor's own offset is stale.
+            for (let off = 0; off < chunk.value.length; ) {
+              off += (await fh.write(chunk.value, off, chunk.value.length - off, bytes + off)).bytesWritten;
+            }
+            bytes += chunk.value.length;
+          }
+          break;
+        } catch (e) {
+          if (!(e instanceof NetDrop)) throw e;
+          ac.abort(e);
+          if (attempt >= DOWNLOAD_RETRIES) throw new UserError(`could not download ${file}: ${e.tag}`);
         }
-        hash.update(chunk.value);
-        for (let off = 0; off < chunk.value.length; ) off += (await fh.write(chunk.value, off)).bytesWritten;
       }
     } finally {
       await fh.close();

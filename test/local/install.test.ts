@@ -296,6 +296,133 @@ test("install: HTTP error status -> UserError with the status", async () => {
   expect(readdirSync(modelsDir())).toEqual([]);
 });
 
+// --- download retry with Range ---
+
+const reset = () => Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNRESET" } });
+
+/** Sends `bytes` (16 KB chunks), then errors the stream instead of closing it. */
+function dropsAfter(bytes: Uint8Array, status = 200): Response {
+  let off = 0;
+  return new Response(new ReadableStream<Uint8Array>({
+    async pull(c) {
+      await new Promise((r) => setTimeout(r, 0));
+      if (off >= bytes.length) return c.error(reset());
+      c.enqueue(bytes.slice(off, off + 16384));
+      off += 16384;
+    },
+  }), { status });
+}
+
+/**
+ * Model requests go through `respond(attempt, range)`; everything else is served as usual.
+ * `ranges` records the Range header of each model request (null: none).
+ */
+function modelFetch(respond: (attempt: number, range: string | null) => Response | Promise<Response>) {
+  const d = deps();
+  const fetchOk = d.fetch;
+  const ranges: (string | null)[] = [];
+  d.fetch = async (url, init) => {
+    if (url !== MODEL.url) return fetchOk(url, init);
+    const range = new Headers(init?.headers).get("range");
+    ranges.push(range);
+    return respond(ranges.length, range);
+  };
+  return { d, ranges };
+}
+
+/** Serves the model honouring `Range: bytes=<n>-` with a 206 and the rest of the bytes. */
+const ranged = (range: string | null): Response => {
+  if (!range) return chunked(modelBytes);
+  const from = Number(/^bytes=(\d+)-$/.exec(range)![1]);
+  return new Response(modelBytes.slice(from), {
+    status: 206, headers: { "content-range": `bytes ${from}-${modelBytes.length - 1}/${modelBytes.length}` },
+  });
+};
+
+const N = 3 * 16384;
+
+test("download: dropped connection resumes with Range, file verifies", async () => {
+  const { d, ranges } = modelFetch((attempt, range) => (attempt === 1 ? dropsAfter(modelBytes.slice(0, N)) : ranged(range)));
+  const r = await localInstall(d, fixturePins());
+  expect(ranges).toEqual([null, `bytes=${N}-`]);
+  expect(sha(readFileSync(paths().model))).toBe(sha(modelBytes));
+  expect(r.downloaded_bytes).toBe(archives["linux-cpu-x64"].length + modelBytes.length + diarBytes.length);
+  expect(readdirSync(modelsDir()).sort()).toEqual(["nemotron-3-diarization-q8_0.gguf", "ultra-q8_0.gguf"]);
+});
+
+test("download: server answers 200 to Range -> restarts from zero, file verifies", async () => {
+  const { d, ranges } = modelFetch((attempt) => (attempt === 1 ? dropsAfter(modelBytes.slice(0, N)) : chunked(modelBytes)));
+  const r = await localInstall(d, fixturePins());
+  expect(ranges).toEqual([null, `bytes=${N}-`]);
+  expect(sha(readFileSync(paths().model))).toBe(sha(modelBytes));
+  expect(r.downloaded_bytes).toBe(archives["linux-cpu-x64"].length + modelBytes.length + diarBytes.length);
+  expect(readdirSync(modelsDir()).sort()).toEqual(["nemotron-3-diarization-q8_0.gguf", "ultra-q8_0.gguf"]);
+});
+
+test("download: idle stall mid-body is retried", async () => {
+  const { d, ranges } = modelFetch((attempt, range) => {
+    if (attempt > 1) return ranged(range);
+    let sent = false;
+    return new Response(new ReadableStream<Uint8Array>({
+      pull(c) {
+        if (sent) return new Promise(() => {}); // stalls after the first chunk
+        sent = true;
+        c.enqueue(modelBytes.slice(0, 1000));
+      },
+    }));
+  });
+  d.downloadIdleMs = 50;
+  await localInstall(d, fixturePins());
+  expect(ranges).toEqual([null, "bytes=1000-"]);
+  expect(sha(readFileSync(paths().model))).toBe(sha(modelBytes));
+  expect(readdirSync(modelsDir()).sort()).toEqual(["nemotron-3-diarization-q8_0.gguf", "ultra-q8_0.gguf"]);
+});
+
+test("download: connection error before headers is retried", async () => {
+  const { d, ranges } = modelFetch((attempt, range) => {
+    if (attempt === 1) throw reset();
+    return ranged(range);
+  });
+  await localInstall(d, fixturePins());
+  expect(ranges).toEqual([null, null]); // nothing received yet: no Range
+  expect(sha(readFileSync(paths().model))).toBe(sha(modelBytes));
+});
+
+test("download: 4 failures in a row -> UserError \"could not download <file>: <tag>\", .part removed, 4 requests made", async () => {
+  const { d, ranges } = modelFetch((_attempt, range) => {
+    const from = range ? Number(/^bytes=(\d+)-$/.exec(range)![1]) : 0;
+    return dropsAfter(modelBytes.slice(from, from + 16384), range ? 206 : 200);
+  });
+  const err = await localInstall(d, fixturePins()).catch((e) => e);
+  expect(err).toBeInstanceOf(UserError);
+  expect(err.message).toBe("could not download ultra-q8_0.gguf: ECONNRESET");
+  expect(ranges).toEqual([null, "bytes=16384-", "bytes=32768-", "bytes=49152-"]);
+  expect(readdirSync(modelsDir())).toEqual([]);
+});
+
+test("download: HTTP 404 on a retry -> \"could not download <file>: HTTP 404\", no further requests", async () => {
+  const { d, ranges } = modelFetch((attempt) =>
+    attempt === 1 ? dropsAfter(modelBytes.slice(0, N)) : new Response("not found", { status: 404 }),
+  );
+  const err = await localInstall(d, fixturePins()).catch((e) => e);
+  expect(err).toBeInstanceOf(UserError);
+  expect(err.message).toBe("could not download ultra-q8_0.gguf: HTTP 404");
+  expect(ranges).toEqual([null, `bytes=${N}-`]);
+  expect(readdirSync(modelsDir())).toEqual([]);
+});
+
+test("download: checksum mismatch and HTTP errors are not retried", async () => {
+  const bad = new Uint8Array(modelBytes);
+  bad[1000] = bad[1000]! ^ 0xff;
+  served.set(MODEL.url, bad);
+  await localInstall(deps(), fixturePins()).catch(() => {});
+  expect(fetched.filter((u) => u === MODEL.url)).toHaveLength(1);
+  fetched = [];
+  served.delete(MODEL.url);
+  await localInstall(deps(), fixturePins()).catch(() => {});
+  expect(fetched.filter((u) => u === MODEL.url)).toHaveLength(1);
+});
+
 test("install: tar failure -> UserError naming the asset, no build dir", async () => {
   const d = deps();
   d.run = async () => ({ code: 2, stdout: "", stderr: "gzip: stdin: not in gzip format\n" });
