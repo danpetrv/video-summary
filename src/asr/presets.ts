@@ -8,7 +8,7 @@ export type RemoteProvider = {
 };
 /** On-device recognition: no server, no key, no speaker labels. */
 export type LocalProvider = {
-  name: string; type: "local"; url: null; model: "ultra"; diarize: false;
+  name: string; type: "local"; url: null; model: "ultra"; diarize: boolean;
   keyFile: null; keyEnv: null; engine: "parakeet"; device: "auto" | "cpu";
 };
 export type ResolvedProvider = RemoteProvider | LocalProvider;
@@ -19,7 +19,7 @@ export function resolveProvider(p: ProviderConfig): ResolvedProvider;
 export function resolveProvider(p: ProviderConfig): ResolvedProvider {
   if (p.type === "local") {
     return {
-      name: p.name, type: "local", url: null, model: p.model, diarize: false,
+      name: p.name, type: "local", url: null, model: p.model, diarize: p.diarize,
       keyFile: null, keyEnv: null, engine: p.engine, device: p.device,
     };
   }

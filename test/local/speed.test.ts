@@ -10,7 +10,7 @@ const root = mkdtempSync(join(tmpdir(), "vs-speed-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 let n = 0;
 const speedFile = () => localPaths({ XDG_STATE_HOME: join(root, `s${n++}`) }, root).speedFile;
-const loc = resolveProvider({ name: "local", type: "local", engine: "parakeet", model: "ultra", device: "auto" });
+const loc = resolveProvider({ name: "local", type: "local", engine: "parakeet", model: "ultra", device: "auto", diarize: true });
 
 test("speedKey: parakeet:ultra:<gpu|cpu>", () => {
   expect(speedKey(loc, "cpu")).toBe("parakeet:ultra:cpu");

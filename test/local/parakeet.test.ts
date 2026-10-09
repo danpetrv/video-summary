@@ -16,7 +16,7 @@ afterAll(() => rmSync(root, { recursive: true, force: true }));
 const VULKAN_LIB = "/usr/lib/x86_64-linux-gnu/libvulkan.so.1";
 const THREADS = String(Math.min(availableParallelism(), 8));
 const local = (device: "auto" | "cpu" = "auto") =>
-  resolveProvider({ name: "local", type: "local", engine: "parakeet", model: "ultra", device });
+  resolveProvider({ name: "local", type: "local", engine: "parakeet", model: "ultra", device, diarize: true });
 
 type Call = { cmd: string[]; opts?: Parameters<Runner>[1] };
 let n = 0;
@@ -160,7 +160,7 @@ test("transcribe: the GPU build works -> device gpu, no notes; the note uses the
     builds: ["linux-vulkan-x64", "linux-cpu-x64"], vulkanLib: true,
     cli: (bin) => bin.includes("vulkan") ? { code: 1, stdout: "", stderr: "" } : { code: 0, stdout: fixture, stderr: "" },
   });
-  const named = resolveProvider({ name: "parakeet", type: "local", engine: "parakeet", model: "ultra", device: "auto" });
+  const named = resolveProvider({ name: "parakeet", type: "local", engine: "parakeet", model: "ultra", device: "auto", diarize: true });
   const r2 = await transcribeParakeet(failing.ogg, named, failing.d);
   expect(r2.provider).toBe("parakeet");
   expect(r2.notes).toEqual(["parakeet: GPU run failed (exit code 1), used CPU"]);

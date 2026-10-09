@@ -9,7 +9,7 @@ export type RemoteProviderConfig = KeyRef & {
 };
 /** On-device recognition; parsing fills in the defaults, so a parsed config always has all fields. */
 export type LocalProviderConfig = {
-  name: string; type: "local"; engine: "parakeet"; model: "ultra"; device: "auto" | "cpu";
+  name: string; type: "local"; engine: "parakeet"; model: "ultra"; device: "auto" | "cpu"; diarize: boolean;
 };
 export type ProviderConfig = RemoteProviderConfig | LocalProviderConfig;
 export type ReadeckConfig = KeyRef & { url: string; label?: string };
@@ -91,7 +91,7 @@ function providerName(raw: Record<string, unknown>, path: string, seen: Set<stri
   return name;
 }
 
-const LOCAL_KEYS = ["name", "type", "engine", "model", "device"];
+const LOCAL_KEYS = ["name", "type", "engine", "model", "device", "diarize"];
 /** Keys of the other provider types, current and removed: named as such rather than as unknown. */
 const REMOTE_KEYS = ["url", "diarize", "keyFile", "keyEnv", "preset", ...REMOVED_PROVIDER_KEYS];
 
@@ -103,7 +103,10 @@ function oneOf<T extends string>(o: Record<string, unknown>, k: string, allowed:
   return v as T;
 }
 
-/** The local type is new in v0.4.0: no old configs to migrate, so any other field is an error. */
+/**
+ * The local type is new in v0.4.0: no old configs to migrate, so any other field is an error.
+ * `diarize` (v0.5) turns speaker labels on or off; default on.
+ */
 function parseLocal(raw: Record<string, unknown>, path: string, seen: Set<string>): LocalProviderConfig {
   for (const k of Object.keys(raw)) {
     if (!LOCAL_KEYS.includes(k)) fail(`${path}.${k}`, REMOTE_KEYS.includes(k) ? "not allowed for type local" : "unknown key");
@@ -113,6 +116,7 @@ function parseLocal(raw: Record<string, unknown>, path: string, seen: Set<string
     engine: oneOf(raw, "engine", ["parakeet"], path),
     model: oneOf(raw, "model", ["ultra"], path),
     device: oneOf(raw, "device", ["auto", "cpu"], path),
+    diarize: optBool(raw, "diarize", path) ?? true,
   };
 }
 

@@ -5,6 +5,8 @@ import { join } from "node:path";
 import {
   DEFAULT_CONFIG, configPath, expandHome, keySource, loadConfig, parseConfig, readKey, saveConfig, setValue,
 } from "../src/config";
+import { resolveProvider } from "../src/asr/presets";
+import type { LocalProviderConfig } from "../src/config";
 import { UserError } from "../src/types";
 
 const tmp = mkdtempSync(join(tmpdir(), "vs-config-"));
@@ -141,21 +143,36 @@ test("parseConfig: url/model requirements with field paths", () => {
 
 test("local provider: defaults engine parakeet, model ultra, device auto", () => {
   expect(parseConfig({ providers: [{ name: "local", type: "local" }] }).providers).toEqual([
-    { name: "local", type: "local", engine: "parakeet", model: "ultra", device: "auto" },
+    { name: "local", type: "local", engine: "parakeet", model: "ultra", device: "auto", diarize: true },
   ]);
-  const full = { name: "l", type: "local", engine: "parakeet", model: "ultra", device: "cpu" } as const;
+  const full = { name: "l", type: "local", engine: "parakeet", model: "ultra", device: "cpu", diarize: true } as const;
   expect(parseConfig({ providers: [full] }).providers).toEqual([full]);
   // set via `config set providers`, next to a whisperx fallback
   const c = setValue(DEFAULT_CONFIG, "providers", [{ name: "wx", type: "whisperx", url: "https://a" }, { name: "local", type: "local" }]);
   expect(c.providers.map((p) => p.type)).toEqual(["whisperx", "local"]);
 });
 
-test("local provider: url/keyFile/diarize/other model -> error with field path", () => {
+test("local: diarize defaults to true", () => {
+  const [p] = parseConfig({ providers: [{ name: "local", type: "local" }] }).providers;
+  expect(p).toMatchObject({ type: "local", diarize: true });
+});
+
+test("local: diarize false is kept", () => {
+  const [p] = parseConfig({ providers: [{ name: "local", type: "local", diarize: false }] }).providers;
+  expect(p).toMatchObject({ type: "local", diarize: false });
+  expect(resolveProvider(p as LocalProviderConfig).diarize).toBe(false);
+});
+
+test("local: diarize must be boolean", () => {
+  expect(() => parseConfig({ providers: [{ name: "l", type: "local", diarize: "no" }] }, []))
+    .toThrow("config: providers[0].diarize: must be true or false");
+});
+
+test("local provider: url/keyFile/other model -> error with field path", () => {
   const bad = (extra: object) => () => parseConfig({ providers: [{ name: "l", type: "local", ...extra }] }, []);
   for (const k of ["url", "keyFile", "keyEnv"]) {
     expect(bad({ [k]: "x" })).toThrow(`config: providers[0].${k}: not allowed for type local`);
   }
-  expect(bad({ diarize: true })).toThrow("config: providers[0].diarize: not allowed for type local");
   // strict: no soft migration for the new type
   expect(bad({ tier: "free" })).toThrow("config: providers[0].tier: not allowed for type local");
   expect(bad({ preset: "groq" })).toThrow("config: providers[0].preset: not allowed for type local");

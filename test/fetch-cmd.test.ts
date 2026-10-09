@@ -23,7 +23,7 @@ afterAll(() => rmSync(root, { recursive: true, force: true }));
 const WX: ProviderConfig = { name: "wx", type: "whisperx", url: "http://wx:9000" };
 const OWN_URL = "http://own:8000/v1";
 const OWN: ProviderConfig = { name: "own", type: "openai-compatible", url: OWN_URL, model: "m" };
-const LOCAL: ProviderConfig = { name: "local", type: "local", engine: "parakeet", model: "ultra", device: "auto" };
+const LOCAL: ProviderConfig = { name: "local", type: "local", engine: "parakeet", model: "ultra", device: "auto", diarize: true };
 
 type Env = {
   meta?: object; health?: number; asrStatus?: number; modelsStatus?: number; ownStatus?: number; oggDuration?: string;

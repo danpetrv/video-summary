@@ -18,9 +18,9 @@ test("resolveProvider: openai-compatible — url/model/keys from config, never d
 });
 
 test("resolveProvider: local — no url or keys, never diarized; engine/model/device from config", () => {
-  expect(resolveProvider({ name: "local", type: "local", engine: "parakeet", model: "ultra", device: "auto" })).toEqual({
-    name: "local", type: "local", url: null, model: "ultra", diarize: false, keyFile: null, keyEnv: null,
+  expect(resolveProvider({ name: "local", type: "local", engine: "parakeet", model: "ultra", device: "auto", diarize: true })).toEqual({
+    name: "local", type: "local", url: null, model: "ultra", diarize: true, keyFile: null, keyEnv: null,
     engine: "parakeet", device: "auto",
   });
-  expect(resolveProvider({ name: "l", type: "local", engine: "parakeet", model: "ultra", device: "cpu" }).device).toBe("cpu");
+  expect(resolveProvider({ name: "l", type: "local", engine: "parakeet", model: "ultra", device: "cpu", diarize: true }).device).toBe("cpu");
 });

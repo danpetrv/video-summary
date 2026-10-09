@@ -10,7 +10,7 @@ import type { Fetcher, Runner } from "../../src/types";
 
 const own = resolveProvider({ name: "own", type: "openai-compatible", url: "http://own/v1", model: "m", keyEnv: "OWN_KEY" });
 const wx = resolveProvider({ name: "wx", type: "whisperx", url: "https://wx" });
-const loc = resolveProvider({ name: "local", type: "local", engine: "parakeet", model: "ultra", device: "auto" });
+const loc = resolveProvider({ name: "local", type: "local", engine: "parakeet", model: "ultra", device: "auto", diarize: true });
 const ok = (p: ResolvedProvider): Candidate => ({ provider: p, available: true, keyMissing: null });
 const asrDeps = (fetch: Fetcher, home: string): AsrDeps => ({
   fetch, env: {}, home, platform: "linux", arch: "x64", exists: () => false,
