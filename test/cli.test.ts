@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { type CliDeps, main } from "../src/cli";
 import { DEFAULT_CONFIG } from "../src/config";
 import { localPaths } from "../src/local/paths";
-import { MODEL } from "../src/local/pins";
+import { DIAR_MODEL, MODEL } from "../src/local/pins";
 import { UserError } from "../src/types";
 
 const root = mkdtempSync(join(tmpdir(), "vs-cli-"));
@@ -87,12 +87,16 @@ function localEnv() {
   return { env, exists: (p: string) => p.startsWith(dir) && existsSync(p), paths: localPaths(env, root) };
 }
 /** Installed linux-cpu-x64 build and a model of the pinned size (sparse: no real 0.9 GB on disk). */
-function installLocal(paths: ReturnType<typeof localPaths>) {
+function installLocal(paths: ReturnType<typeof localPaths>, o: { diar?: boolean } = {}) {
   mkdirSync(paths.binDir("linux-cpu-x64"), { recursive: true });
   writeFileSync(paths.cli("linux-cpu-x64"), "");
   mkdirSync(join(paths.model, ".."), { recursive: true });
   writeFileSync(paths.model, "");
   truncateSync(paths.model, MODEL.size);
+  if (o.diar ?? true) {
+    writeFileSync(paths.diarModel, "");
+    truncateSync(paths.diarModel, DIAR_MODEL.size);
+  }
 }
 
 test("check: local configured, not installed -> deps.missing has parakeet with the install command; installed -> provider available", async () => {
@@ -110,6 +114,19 @@ test("check: local configured, not installed -> deps.missing has parakeet with t
   expect(after.deps.missing).toEqual([]);
   expect(after.ok).toBe(true);
   expect(after.providers).toEqual([{ name: "local", available: true, keyMissing: null }]);
+});
+
+test("check: local installed without the diarization model -> optional diarization-model item, ok stays true", async () => {
+  writeFileSync(cfgFile, JSON.stringify({ providers: [{ name: "local", type: "local" }] }));
+  const { env, exists, paths } = localEnv();
+  installLocal(paths, { diar: false });
+  const r = (await call(["check"], { env, exists })) as any;
+  expect(r.deps.missing).toEqual([{
+    name: "diarization-model", install: "sh <skill-dir>/scripts/video-summary local install", needsSudo: false,
+    note: "~0.1 GB download; enables speaker labels", optional: true,
+  }]);
+  expect(r.deps.ok).toBe(true);
+  expect(r.ok).toBe(true);
 });
 
 test("check: linux, no libvulkan, nvidia-smi present -> deps.missing has libvulkan1 (needsSudo, optional), ok stays true", async () => {
@@ -199,6 +216,7 @@ test("local status -> JSON status of the engine and model, no network", async ()
   expect(r).toEqual({
     installed: false, version: "v0.6.1", builds: [],
     model: { present: false, verified: false, path: join(root, "cache", "video-summary", "models", "ultra-q8_0.gguf") },
+    diarization: { present: false, verified: false, path: join(root, "cache", "video-summary", "models", "nemotron-3-diarization-q8_0.gguf") },
     vulkan_lib: false, hint: "sudo apt install libvulkan1",
   });
 });

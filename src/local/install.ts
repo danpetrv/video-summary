@@ -5,8 +5,9 @@ import { basename, dirname, join } from "node:path";
 import { netErrorTag, oneLine } from "../net";
 import { type Fetcher, type Platform, type Runner, UserError } from "../types";
 import { findVulkanLib, planBuilds } from "./builds";
+import { diarModelReady } from "./diarize";
 import { type LocalPaths, localPaths } from "./paths";
-import { BUILDS, type BuildId, type BuildPin, MODEL, type ModelPin, PARAKEET_VERSION, RELEASE_URL } from "./pins";
+import { BUILDS, type BuildId, type BuildPin, DIAR_MODEL, MODEL, type ModelPin, PARAKEET_VERSION, RELEASE_URL } from "./pins";
 
 export type LocalDeps = {
   run: Runner; fetch: Fetcher; env: Record<string, string | undefined>; home: string;
@@ -14,17 +15,21 @@ export type LocalDeps = {
   downloadIdleMs?: number; // a download with no headers or bytes for this long gives up (default DOWNLOAD_IDLE_MS)
 };
 /** Injectable for tests: fixture sizes and hashes instead of the real release. */
-export type Pins = { BUILDS: Record<BuildId, BuildPin>; MODEL: ModelPin };
+export type Pins = { BUILDS: Record<BuildId, BuildPin>; MODEL: ModelPin; DIAR_MODEL: ModelPin };
 
 export type LocalStatus = {
   installed: boolean; version: string; builds: BuildId[];
-  model: { present: boolean; verified: boolean; path: string }; vulkan_lib: boolean; hint?: string;
+  model: { present: boolean; verified: boolean; path: string };
+  /** Optional speaker-diarization model: its absence does not make `installed` false. */
+  diarization: { present: boolean; verified: boolean; path: string };
+  vulkan_lib: boolean; hint?: string;
 };
 export type LocalInstallResult = {
-  version: string; builds: BuildId[]; model: { path: string; bytes: number }; downloaded_bytes: number;
+  version: string; builds: BuildId[]; model: { path: string; bytes: number };
+  diar_model: { path: string; bytes: number }; downloaded_bytes: number;
 };
 
-const DEFAULT_PINS: Pins = { BUILDS, MODEL };
+const DEFAULT_PINS: Pins = { BUILDS, MODEL, DIAR_MODEL };
 
 /** A stalled download (no response headers or no new bytes for this long) is aborted. */
 export const DOWNLOAD_IDLE_MS = 60_000;
@@ -49,7 +54,9 @@ export function localStatus(d: LocalDeps, pins: Pins = DEFAULT_PINS): LocalStatu
   const verified = present && sizeOf(paths.model) === pins.MODEL.size;
   const out: LocalStatus = {
     installed: d.exists(paths.cli(cpuBuild)) && verified,
-    version: PARAKEET_VERSION, builds, model: { present, verified, path: paths.model }, vulkan_lib: vulkanLib,
+    version: PARAKEET_VERSION, builds, model: { present, verified, path: paths.model },
+    diarization: { present: d.exists(paths.diarModel), verified: diarModelReady(paths, pins.DIAR_MODEL.size), path: paths.diarModel },
+    vulkan_lib: vulkanLib,
   };
   // An NVIDIA GPU without the Vulkan loader: installing it lets the next `local install` add the GPU build.
   if (d.platform === "linux" && !vulkanLib && d.has("nvidia-smi")) out.hint = "sudo apt install libvulkan1";
@@ -63,7 +70,11 @@ export async function localInstall(d: LocalDeps, pins: Pins = DEFAULT_PINS): Pro
   let downloaded = 0;
   for (const b of builds) downloaded += await ensureBuild(d, paths, b, pins.BUILDS[b]);
   downloaded += await ensureModel(d, paths.model, pins.MODEL);
-  return { version: PARAKEET_VERSION, builds, model: { path: paths.model, bytes: pins.MODEL.size }, downloaded_bytes: downloaded };
+  downloaded += await ensureModel(d, paths.diarModel, pins.DIAR_MODEL);
+  return {
+    version: PARAKEET_VERSION, builds, model: { path: paths.model, bytes: pins.MODEL.size },
+    diar_model: { path: paths.diarModel, bytes: pins.DIAR_MODEL.size }, downloaded_bytes: downloaded,
+  };
 }
 
 /** Archive -> temp dir next to the target -> `tar -xzf` -> rename the unpacked dir into place. */

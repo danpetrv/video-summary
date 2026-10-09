@@ -1,6 +1,6 @@
 import type { Platform, Runner } from "./types";
 
-export type DepName = "yt-dlp" | "yt-dlp-ejs" | "ffmpeg" | "ffprobe" | "parakeet" | "libvulkan1";
+export type DepName = "yt-dlp" | "yt-dlp-ejs" | "ffmpeg" | "ffprobe" | "parakeet" | "diarization-model" | "libvulkan1";
 export type DepStatus = { name: DepName; found: boolean; version: string | null };
 export type DepsReport = {
   ok: boolean;
@@ -129,10 +129,14 @@ export function buildReport(
 export const depsOk = (missing: DepsReport["missing"]): boolean => missing.every((m) => m.optional);
 
 /** Missing pieces of a configured local provider, from `localStatus`. libvulkan1 is advisory: the CPU build works without it. */
-export function localMissing(s: { installed: boolean; hint?: string }): DepsReport["missing"] {
+export function localMissing(s: { installed: boolean; hint?: string; diarization?: { verified: boolean } }): DepsReport["missing"] {
   const out: DepsReport["missing"] = [];
   if (!s.installed) {
     out.push({ name: "parakeet", install: "sh <skill-dir>/scripts/video-summary local install", needsSudo: false, note: "~0.9 GB download" });
+  }
+  // Installed but without the diarization model (a v0.4 install): optional, speaker labels only.
+  if (s.installed && s.diarization && !s.diarization.verified) {
+    out.push({ name: "diarization-model", install: "sh <skill-dir>/scripts/video-summary local install", needsSudo: false, note: "~0.1 GB download; enables speaker labels", optional: true });
   }
   if (s.hint) {
     out.push({ name: "libvulkan1", install: "sudo apt install libvulkan1", needsSudo: true, note: "enables GPU recognition; run local install again afterwards", optional: true });

@@ -45,6 +45,14 @@ export const MODEL: ModelPin = {
   sha256: "c2fb452a9df468a141012b01c8c168a25ce93f710897c7de6e353c6cc250986a",
 };
 
+/** Nemotron-3 speaker diarization model, q8_0, at the same fixed revision as the main model. */
+export const DIAR_MODEL: ModelPin = {
+  file: "nemotron-3-diarization-q8_0.gguf",
+  url: "https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/741158ae71e64ef5c89385862c18f777d07a97a1/nemotron-3-diarization-q8_0.gguf",
+  size: 108674624,
+  sha256: "76c5bb1fb20d82706142ad32769b7ab496d2458489473a000fd7074c52ceec22",
+};
+
 /** Languages Parakeet v3 / Ultra recognizes. */
 export const LANGUAGES: readonly string[] = [
   "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu",

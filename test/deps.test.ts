@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { buildReport, probeDeps, type DepName } from "../src/deps";
+import { buildReport, localMissing, probeDeps, type DepName } from "../src/deps";
 import type { Runner } from "../src/types";
 
 const all = (o: Partial<Record<DepName, string | null>>) =>
@@ -125,4 +125,17 @@ test("yt-dlp-ejs: found:false when absent from Optional libraries or yt-dlp miss
   expect((await probeDeps(noEjs))[1]).toEqual({ name: "yt-dlp-ejs", found: false, version: null });
   const none: Runner = async () => ({ code: 127, stdout: "", stderr: "nf" });
   expect((await probeDeps(none)).every((s) => !s.found)).toBe(true);
+});
+
+test("localMissing: installed without the diarization model -> one optional item", () => {
+  expect(localMissing({ installed: true, diarization: { verified: false } })).toEqual([
+    { name: "diarization-model", install: "sh <skill-dir>/scripts/video-summary local install", needsSudo: false, note: "~0.1 GB download; enables speaker labels", optional: true },
+  ]);
+});
+
+test("localMissing: not installed -> only parakeet; diarization verified or unknown -> nothing extra", () => {
+  const r = localMissing({ installed: false, diarization: { verified: false } });
+  expect(r.map((m) => m.name)).toEqual(["parakeet"]);
+  expect(localMissing({ installed: true, diarization: { verified: true } })).toEqual([]);
+  expect(localMissing({ installed: true })).toEqual([]);
 });

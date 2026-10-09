@@ -1,7 +1,7 @@
 import { join } from "node:path";
-import { type BuildId, MODEL, PARAKEET_VERSION } from "./pins";
+import { type BuildId, DIAR_MODEL, MODEL, PARAKEET_VERSION } from "./pins";
 
-export type LocalPaths = { binDir(build: BuildId): string; cli(build: BuildId): string; model: string; speedFile: string };
+export type LocalPaths = { binDir(build: BuildId): string; cli(build: BuildId): string; model: string; diarModel: string; speedFile: string };
 
 /** XDG locations (same layout on macOS); an empty variable counts as unset. */
 export function localPaths(env: Record<string, string | undefined>, home: string): LocalPaths {
@@ -13,6 +13,7 @@ export function localPaths(env: Record<string, string | undefined>, home: string
     binDir,
     cli: (build) => join(binDir(build), "parakeet-cli"),
     model: join(cache, "video-summary", "models", MODEL.file),
+    diarModel: join(cache, "video-summary", "models", DIAR_MODEL.file),
     speedFile: join(state, "video-summary", "speed.json"),
   };
 }

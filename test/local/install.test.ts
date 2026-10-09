@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { type LocalDeps, localInstall, localStatus } from "../../src/local/install";
 import { localPaths } from "../../src/local/paths";
-import { BUILDS, type BuildId, MODEL, PARAKEET_VERSION } from "../../src/local/pins";
+import { BUILDS, type BuildId, DIAR_MODEL, MODEL, PARAKEET_VERSION } from "../../src/local/pins";
 import { UserError } from "../../src/types";
 
 const root = mkdtempSync(join(tmpdir(), "vs-local-"));
@@ -19,12 +19,14 @@ const archives = Object.fromEntries(
   (Object.keys(BUILDS) as BuildId[]).map((b) => [b, new TextEncoder().encode(`archive:${b}:${"x".repeat(5000)}`)]),
 ) as Record<BuildId, Uint8Array>;
 const modelBytes = new Uint8Array(randomBytes(200_000));
+const diarBytes = new Uint8Array(randomBytes(50_000));
 
 const fixturePins = () => ({
   BUILDS: Object.fromEntries(
     (Object.keys(BUILDS) as BuildId[]).map((b) => [b, { ...BUILDS[b], size: archives[b].length, sha256: sha(archives[b]) }]),
   ) as typeof BUILDS,
   MODEL: { ...MODEL, size: modelBytes.length, sha256: sha(modelBytes) },
+  DIAR_MODEL: { ...DIAR_MODEL, size: diarBytes.length, sha256: sha(diarBytes) },
 });
 
 /** Body in 16 KB chunks with a macrotask between them, so concurrent installs interleave. */
@@ -50,7 +52,7 @@ beforeEach(() => {
   dir = join(root, `t${n++}`);
   fetched = [];
   tarCalls = [];
-  served = new Map<string, Uint8Array>([[MODEL.url, modelBytes]]);
+  served = new Map<string, Uint8Array>([[MODEL.url, modelBytes], [DIAR_MODEL.url, diarBytes]]);
   for (const b of Object.keys(BUILDS) as BuildId[]) served.set(RELEASE + BUILDS[b].asset, archives[b]);
 });
 
@@ -93,7 +95,8 @@ test("install: downloads planned builds and the model, verifies, places them; se
     version: "v0.6.1",
     builds: ["linux-vulkan-x64", "linux-cpu-x64"],
     model: { path: paths().model, bytes: modelBytes.length },
-    downloaded_bytes: archives["linux-vulkan-x64"].length + archives["linux-cpu-x64"].length + modelBytes.length,
+    diar_model: { path: paths().diarModel, bytes: diarBytes.length },
+    downloaded_bytes: archives["linux-vulkan-x64"].length + archives["linux-cpu-x64"].length + modelBytes.length + diarBytes.length,
   });
   expect(readFileSync(paths().cli("linux-vulkan-x64"), "utf8")).toBe("cli:linux-vulkan-x64");
   expect(readFileSync(paths().cli("linux-cpu-x64"), "utf8")).toBe("cli:linux-cpu-x64");
@@ -101,14 +104,38 @@ test("install: downloads planned builds and the model, verifies, places them; se
   expect(sha(readFileSync(paths().model))).toBe(sha(modelBytes));
   // Nothing left behind: no temp dirs, archives or .part files.
   expect(readdirSync(versionDir()).sort()).toEqual(["linux-cpu-x64", "linux-vulkan-x64"]);
-  expect(readdirSync(modelsDir())).toEqual(["ultra-q8_0.gguf"]);
-  expect(fetched.sort()).toEqual([MODEL.url, RELEASE + BUILDS["linux-cpu-x64"].asset, RELEASE + BUILDS["linux-vulkan-x64"].asset].sort());
+  expect(sha(readFileSync(paths().diarModel))).toBe(sha(diarBytes));
+  expect(readdirSync(modelsDir()).sort()).toEqual(["nemotron-3-diarization-q8_0.gguf", "ultra-q8_0.gguf"]);
+  expect(fetched.sort()).toEqual([DIAR_MODEL.url, MODEL.url, RELEASE + BUILDS["linux-cpu-x64"].asset, RELEASE + BUILDS["linux-vulkan-x64"].asset].sort());
 
   fetched = [];
   const again = await localInstall(d, pins);
   expect(again.downloaded_bytes).toBe(0);
   expect(again.builds).toEqual(["linux-vulkan-x64", "linux-cpu-x64"]);
   expect(fetched).toEqual([]);
+});
+
+test("install: v0.4 machine (builds + ultra present) downloads only the diarization model", async () => {
+  const d = deps();
+  const pins = fixturePins();
+  await localInstall(d, pins);
+  rmSync(paths().diarModel);
+  fetched = [];
+  const r = await localInstall(d, pins);
+  expect(r.downloaded_bytes).toBe(diarBytes.length);
+  expect(fetched).toEqual([DIAR_MODEL.url]);
+  expect(readdirSync(modelsDir()).sort()).toEqual(["nemotron-3-diarization-q8_0.gguf", "ultra-q8_0.gguf"]);
+});
+
+test("install: diarization model with wrong bytes -> UserError naming nemotron-3-diarization-q8_0.gguf, no final file", async () => {
+  const bad = new Uint8Array(diarBytes);
+  bad[100] = bad[100]! ^ 0xff;
+  served.set(DIAR_MODEL.url, bad);
+  const err = await localInstall(deps(), fixturePins()).catch((e) => e);
+  expect(err).toBeInstanceOf(UserError);
+  expect(err.message).toBe("downloaded nemotron-3-diarization-q8_0.gguf does not match the pinned checksum — retry `local install`");
+  expect(existsSync(paths().diarModel)).toBe(false);
+  expect(readdirSync(modelsDir())).toEqual(["ultra-q8_0.gguf"]);
 });
 
 test("install: archive with wrong sha256 -> UserError naming the asset, no build dir", async () => {
@@ -148,7 +175,7 @@ test("install: leftover .part from an interrupted run is replaced", async () => 
   writeFileSync(join(modelsDir(), "ultra-q8_0.gguf.1a2b3c.part"), modelBytes.slice(0, 5000));
   const r = await localInstall(deps(), fixturePins());
   expect(r.downloaded_bytes).toBeGreaterThanOrEqual(modelBytes.length);
-  expect(readdirSync(modelsDir())).toEqual(["ultra-q8_0.gguf"]);
+  expect(readdirSync(modelsDir()).sort()).toEqual(["nemotron-3-diarization-q8_0.gguf", "ultra-q8_0.gguf"]);
   expect(sha(readFileSync(paths().model))).toBe(sha(modelBytes));
 });
 
@@ -157,7 +184,7 @@ test("install: a corrupted model in place (right size, wrong hash) is downloaded
   writeFileSync(paths().model, new Uint8Array(modelBytes.length));
   const r = await localInstall(deps(), fixturePins());
   expect(fetched).toContain(MODEL.url);
-  expect(r.downloaded_bytes).toBe(archives["linux-cpu-x64"].length + modelBytes.length);
+  expect(r.downloaded_bytes).toBe(archives["linux-cpu-x64"].length + modelBytes.length + diarBytes.length);
   expect(sha(readFileSync(paths().model))).toBe(sha(modelBytes));
 });
 
@@ -199,7 +226,7 @@ test("install: concurrent installs end with a complete build dir", async () => {
   }
   expect(sha(readFileSync(paths().model))).toBe(sha(modelBytes));
   expect(readdirSync(versionDir()).sort()).toEqual(["linux-cpu-x64", "linux-vulkan-x64"]);
-  expect(readdirSync(modelsDir())).toEqual(["ultra-q8_0.gguf"]);
+  expect(readdirSync(modelsDir()).sort()).toEqual(["nemotron-3-diarization-q8_0.gguf", "ultra-q8_0.gguf"]);
 });
 
 test("install: network error -> UserError with the error code, not the message", async () => {
@@ -287,7 +314,8 @@ test("install: darwin arm64 installs only the Metal build", async () => {
 test("status: not installed", () => {
   expect(localStatus(deps(), fixturePins())).toEqual({
     installed: false, version: "v0.6.1", builds: [],
-    model: { present: false, verified: false, path: paths().model }, vulkan_lib: false,
+    model: { present: false, verified: false, path: paths().model },
+    diarization: { present: false, verified: false, path: paths().diarModel }, vulkan_lib: false,
   });
 });
 
@@ -296,8 +324,20 @@ test("status: installed", async () => {
   await localInstall(d, fixturePins());
   expect(localStatus(d, fixturePins())).toEqual({
     installed: true, version: "v0.6.1", builds: ["linux-vulkan-x64", "linux-cpu-x64"],
-    model: { present: true, verified: true, path: paths().model }, vulkan_lib: true,
+    model: { present: true, verified: true, path: paths().model },
+    diarization: { present: true, verified: true, path: paths().diarModel }, vulkan_lib: true,
   });
+});
+
+test("status: diarization model missing -> still installed (speaker labels are optional)", async () => {
+  const d = deps();
+  await localInstall(d, fixturePins());
+  rmSync(paths().diarModel);
+  const s = localStatus(d, fixturePins());
+  expect(s.installed).toBe(true);
+  expect(s.diarization).toEqual({ present: false, verified: false, path: paths().diarModel });
+  writeFileSync(paths().diarModel, "truncated");
+  expect(localStatus(d, fixturePins()).diarization).toEqual({ present: true, verified: false, path: paths().diarModel });
 });
 
 test("status: vulkan lib present but the vulkan build missing -> installed (the CPU build runs)", async () => {
@@ -345,5 +385,13 @@ test("pins: release assets and the model are the pinned v0.6.1 / Ultra values", 
     file: "ultra-q8_0.gguf",
     url: "https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/741158ae71e64ef5c89385862c18f777d07a97a1/ultra-q8_0.gguf",
     size: 941517728, sha256: "c2fb452a9df468a141012b01c8c168a25ce93f710897c7de6e353c6cc250986a",
+  });
+});
+
+test("pins: the diarization model is the pinned nemotron-3 q8_0 value", () => {
+  expect(DIAR_MODEL).toEqual({
+    file: "nemotron-3-diarization-q8_0.gguf",
+    url: "https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/741158ae71e64ef5c89385862c18f777d07a97a1/nemotron-3-diarization-q8_0.gguf",
+    size: 108674624, sha256: "76c5bb1fb20d82706142ad32769b7ab496d2458489473a000fd7074c52ceec22",
   });
 });
