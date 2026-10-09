@@ -365,12 +365,12 @@ function buildReport(statuses, platform, runtime, today, has) {
   return { ok: depsOk(missing), platform, runtime, missing, stale };
 }
 var depsOk = (missing) => missing.every((m) => m.optional);
-function localMissing(s) {
+function localMissing(s, diarize = true) {
   const out = [];
   if (!s.installed) {
-    out.push({ name: "parakeet", install: "sh <skill-dir>/scripts/video-summary local install", needsSudo: false, note: "~0.9 GB download" });
+    out.push({ name: "parakeet", install: "sh <skill-dir>/scripts/video-summary local install", needsSudo: false, note: "~1 GB download" });
   }
-  if (s.installed && s.diarization && !s.diarization.verified) {
+  if (diarize && s.installed && s.diarization && !s.diarization.verified) {
     out.push({ name: "diarization-model", install: "sh <skill-dir>/scripts/video-summary local install", needsSudo: false, note: "~0.1 GB download; enables speaker labels", optional: true });
   }
   if (s.hint) {
@@ -1493,8 +1493,11 @@ async function download(d, url, target, pin, file) {
           const reader = res.body?.getReader();
           for (;; ) {
             const chunk = reader ? await net(() => idle(reader.read(), idleMs, ac)) : { done: true, value: undefined };
-            if (chunk.done)
+            if (chunk.done) {
+              if (bytes < pin.size)
+                throw new NetDrop("TRUNCATED");
               break;
+            }
             if (bytes + chunk.value.length > pin.size) {
               await reader.cancel().catch(() => {});
               throw mismatch(file);
@@ -1510,6 +1513,8 @@ async function download(d, url, target, pin, file) {
           if (!(e instanceof NetDrop))
             throw e;
           ac.abort(e);
+          if (bytes === pin.size)
+            break;
           if (attempt >= DOWNLOAD_RETRIES)
             throw new UserError(`could not download ${file}: ${e.tag}`);
         }
@@ -3623,7 +3628,7 @@ async function check(d, path) {
   const resolved = cfg ? cfg.providers.map(resolveProvider) : [];
   const local = resolved.some((p) => p.type === "local") ? localStatus(d) : undefined;
   if (local) {
-    depsReport.missing.push(...localMissing(local));
+    depsReport.missing.push(...localMissing(local, resolved.some((p) => p.type === "local" && p.diarize)));
     depsReport.ok = depsOk(depsReport.missing);
   }
   const providers = (await probeProviders(resolved, d.fetch, d.env, d.home, local)).map((c) => ({
