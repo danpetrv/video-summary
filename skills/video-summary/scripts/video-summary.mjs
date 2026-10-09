@@ -1711,7 +1711,7 @@ async function readSubs(file) {
   return file.endsWith(".srt") ? parseSrt(text) : parseVtt(text);
 }
 async function recognize(getAudio, work, item, flags, d) {
-  const providers = d.cfg.providers.map(resolveProvider);
+  const providers = d.cfg.providers.filter((p) => !flags.provider || p.name === flags.provider).map(resolveProvider);
   const local = providers.some((p) => p.type === "local") ? localStatus(d) : undefined;
   const candidates = await probeProviders(providers, d.fetch, d.env, d.home, local);
   const language = primaryLang(item.language);
@@ -1780,6 +1780,10 @@ async function noteSpeed(file, key, durationSec, elapsedMs) {
 }
 var looksLikeLink = (s) => /^[a-z0-9-]+(\.[a-z0-9-]+)+\/\S*/i.test(s);
 async function fetchCmd(input, flags, d) {
+  if (flags.provider && !d.cfg.providers.some((p) => p.name === flags.provider)) {
+    const names = d.cfg.providers.map((p) => p.name).join(", ") || "none";
+    throw new UserError(`unknown provider ${JSON.stringify(flags.provider)} (configured: ${names})`);
+  }
   const isUrl = /^https?:\/\//i.test(input);
   let item;
   let get;
@@ -1860,7 +1864,8 @@ async function fetchCmd(input, flags, d) {
 `);
   const transcriptPath = join7(dir, "transcript.md");
   const summaryPath = join7(dir, "summary.md");
-  if (prev?.source && existsSync(transcriptPath) && !flags.force) {
+  const otherProvider = !!flags.provider && prev?.source === "asr" && prev.asr_provider !== flags.provider;
+  if (prev?.source && existsSync(transcriptPath) && !flags.force && !otherProvider) {
     return toResult(prev, dir, transcriptPath, summaryPath);
   }
   const work = join7(dir, ".work");
@@ -3578,7 +3583,7 @@ async function finalizeSummary(dir) {
 }
 
 // src/cli.ts
-var USAGE = "usage: video-summary check | config path|get [key]|init [--force]|set <key> <json> | " + "fetch <url|path> [--no-diarize] [--force] [--accept-slow] | finalize <dir> | readeck <dir> | local install|status";
+var USAGE = "usage: video-summary check | config path|get [key]|init [--force]|set <key> <json> | " + "fetch <url|path> [--no-diarize] [--force] [--accept-slow] [--provider <name>] | finalize <dir> | readeck <dir> | local install|status";
 var NO_CONFIG = "no config — run setup (see references/setup.md)";
 async function requireConfig(path) {
   const cfg = await loadConfig(path);
@@ -3674,14 +3679,19 @@ async function main(argv, d) {
     case "config":
       return configCmd(rest, d, path);
     case "fetch": {
-      const src = rest.find((a) => !a.startsWith("--"));
+      const at = rest.indexOf("--provider");
+      const provider = at >= 0 ? rest[at + 1] : undefined;
+      if (at >= 0 && (!provider || provider.startsWith("--")))
+        throw new UserError(USAGE);
+      const src = rest.find((a, i) => !a.startsWith("--") && (at < 0 || i !== at + 1));
       if (!src)
         throw new UserError(USAGE);
       const cfg = await requireConfig(path);
       const flags = {
         diarize: !rest.includes("--no-diarize"),
         force: rest.includes("--force"),
-        acceptSlow: rest.includes("--accept-slow")
+        acceptSlow: rest.includes("--accept-slow"),
+        ...provider ? { provider } : {}
       };
       return fetchCmd(src, flags, {
         run: d.run,
