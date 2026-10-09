@@ -64,7 +64,7 @@ Rules that always apply:
 
 ## 2. Get the text
 
-`fetch '<url|path>' [--no-diarize] [--accept-slow] [--force]`
+`fetch '<url|path>' [--no-diarize] [--accept-slow] [--force] [--provider <name>]`
 
 **This can take minutes** (download, compression, recognition of a long video); tell the
 user beforehand. A short video with subtitles: run it with the Bash timeout `600000`
@@ -82,6 +82,14 @@ server or in the local engine).
 - `--accept-slow`: only after the user agreed to wait the time the error named (see below).
 - `--force`: download and recognize again. Without it a repeated `fetch` returns the
   existing result at once.
+- `--provider <name>`: recognize only with this provider from the config (its `name`, see
+  `config get providers`), with no fallback to the others: if it is unavailable or fails,
+  `fetch` fails with the reason. Use it when the request names a provider: an argument
+  (`/video-summary '<url>' local`, `... whisperx`) or wording such as "recognize
+  locally", "on this machine", "via parakeet" (the provider of type `local`) or "via my
+  server" (match the type or name in the config). If none fits, tell the user the names
+  from the config. Subtitles still come first; a transcript recognized by another provider
+  is recognized again, one already made by this provider is returned as is.
 
 Result: `dir`, `transcript_path`, `summary_path`, `summary_exists`, `source`
 (`youtube-manual-subs`, `manual-subs`, `youtube-auto-subs`, `sidecar-subs`, `asr`),
@@ -131,7 +139,8 @@ language the user talks to you in. Headings are written in that language.
 Size: `short`, `medium`, `long` or `<N>m` (target reading time, 1-60 minutes), taken from,
 in this order:
 
-1. an argument of the request: `/video-summary '<url>' short`, `... 5m`;
+1. an argument of the request: `/video-summary '<url>' short`, `... 5m` (an argument that is a
+   provider, such as `local`, is not a size: it goes to `--provider`);
 2. the wording of the request: "briefly", "in short" → `short`; "in detail" → `long`;
    "a 5-minute read" → `5m` (in any language);
 3. `config get summaryLength` (default `medium`).

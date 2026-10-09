@@ -5,7 +5,8 @@ user's own server (`whisperx`, `openai-compatible`). Providers are tried in conf
 the first that is available, has a key if it needs one, and accepts the video is used. If
 a provider fails in the middle of recognition (HTTP error, network error, timeout, the
 local engine crashing), the next one that fits is tried. `fetch` lists the failed ones in
-`asr_failed`.
+`asr_failed`. `fetch --provider <name>` uses only the named provider for that video, with
+no fallback.
 
 | type | where | speaker labels | key |
 |---|---|---|---|

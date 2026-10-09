@@ -42,7 +42,9 @@ The agent checks all of this (`check`) and offers to install what is missing.
 
 Recognition is used when a video has no subtitles. Providers are tried in the order of the
 config; the first suitable one is used. If it fails during recognition (server error,
-network, the local engine crashing), the next suitable one is tried.
+network, the local engine crashing), the next suitable one is tried. To use one provider
+for a video, name it: `/video-summary <url> local` (or ask to recognize it locally); then
+only that provider is used, with no fallback.
 
 | provider | notes |
 |---|---|
