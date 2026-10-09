@@ -1,0 +1,6 @@
+{"t":0.200,"utterances":[],"words":[],"speakers":[],"sounds":[],"active":{"speakers":[],"sounds":[]}}
+{"t":3.400,"utterances":[],"words":[],"speakers":[{"speaker":0,"start":0.000,"end":3.300}],"sounds":[],"active":{"speakers":[],"sounds":[]}}
+{"t":4.400,"utterances":[],"words":[],"speakers":[],"sounds":[],"active":{"speakers":[{"speaker":1,"start":4.300}],"sounds":[]}}
+
+{"t":33.200,"utterances":[],"words":[],"speakers":[{"speaker":1,"start":4.300,"end":33.000}],"sounds":[],"active":{"speakers":[],"sounds":[]}}
+{"t":40.312,"utterances":[],"words":[],"speakers":[{"speaker":0,"start":34.300,"end":40.300}],"sounds":[],"active":{"speakers":[],"sounds":[]}}

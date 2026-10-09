@@ -21,7 +21,7 @@ const EPS = 1e-6;
 // (printed by the pinned v0.6.1 build when it picks a GPU) tells the two apart.
 const VULKAN_DEVICE = /pk::Backend using device: Vulkan\d+/;
 
-export type Word = { w: string; start: number; end: number };
+export type Word = { w: string; start: number; end: number; speaker?: string };
 
 export type ParakeetDeps = {
   run: Runner; env: Record<string, string | undefined>; home: string;
@@ -31,7 +31,8 @@ export type ParakeetDeps = {
 
 /**
  * parakeet-cli gives words, not segments: group them into cues. A cue ends after a word ending
- * a sentence, before a pause of PAUSE_SEC or more, and before a word that would make it longer than MAX_CUE_SEC.
+ * a sentence, before a pause of PAUSE_SEC or more, before a word that would make it longer than MAX_CUE_SEC,
+ * and before a word of another speaker (words carry `speaker` only after diarization); the cue gets that speaker.
  */
 export function wordsToCues(words: Word[]): Cue[] {
   const cues: Cue[] = [];
@@ -40,7 +41,8 @@ export function wordsToCues(words: Word[]): Cue[] {
     // The model has no « »: it emits <unk> there (seen in Russian runs), which markdown would read as a tag.
     const text = word.w.replaceAll(UNK, "").trim();
     if (!text) continue;
-    if (cur && (word.start - cur.end >= PAUSE_SEC - EPS || word.end - cur.start > MAX_CUE_SEC + EPS)) {
+    if (cur && (word.start - cur.end >= PAUSE_SEC - EPS || word.end - cur.start > MAX_CUE_SEC + EPS
+      || cur.speaker !== word.speaker)) {
       cues.push(cur);
       cur = null;
     }
@@ -49,6 +51,7 @@ export function wordsToCues(words: Word[]): Cue[] {
       cur.end = word.end;
     } else {
       cur = { start: word.start, end: word.end, text };
+      if (word.speaker !== undefined) cur.speaker = word.speaker;
     }
     if (SENTENCE_END.test(text)) {
       cues.push(cur);
