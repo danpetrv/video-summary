@@ -10,7 +10,12 @@ export const SLOW_MINUTES = 10;
 /** Conservative speeds (audio seconds per wall second) until a run on this machine is measured. */
 const DEFAULT_SPEED: Record<"gpu" | "cpu", number> = { cpu: 8, gpu: 60 };
 
+/** Same for the diarization pass (`parakeet-cli scene`), which has its own speed. */
+const DEFAULT_DIAR_SPEED: Record<"gpu" | "cpu", number> = { cpu: 16, gpu: 100 };
+
 export const speedKey = (p: LocalProvider, device: "gpu" | "cpu"): string => `${p.engine}:${p.model}:${device}`;
+
+export const diarSpeedKey = (device: "gpu" | "cpu"): string => `parakeet:diar:${device}`;
 
 /** Measured speeds by key; a missing or broken file (or a bad entry) counts as nothing measured. */
 export async function readSpeeds(file: string): Promise<Record<string, number>> {
@@ -44,10 +49,16 @@ export async function recordSpeed(file: string, key: string, measured: number): 
   }
 }
 
-/** Expected wall time of a local run on the device it is planned to use. */
+/**
+ * Expected wall time of a local run on the device it is planned to use. With `diarize` the diarization
+ * pass is added and `withoutDiarization` keeps the recognition-only time; `speed` stays the recognition speed.
+ */
 export function estimateLocal(
-  p: LocalProvider, durationSec: number, speeds: Record<string, number>, plannedDevice: "gpu" | "cpu",
+  p: LocalProvider, durationSec: number, speeds: Record<string, number>, plannedDevice: "gpu" | "cpu", diarize: boolean,
 ): SlowEstimate {
   const speed = speeds[speedKey(p, plannedDevice)] ?? DEFAULT_SPEED[plannedDevice];
-  return { minutes: durationSec / speed / 60, device: plannedDevice, speed };
+  const minutes = durationSec / speed / 60;
+  if (!diarize) return { minutes, device: plannedDevice, speed };
+  const diarSpeed = speeds[diarSpeedKey(plannedDevice)] ?? DEFAULT_DIAR_SPEED[plannedDevice];
+  return { minutes: minutes + durationSec / diarSpeed / 60, device: plannedDevice, speed, withoutDiarization: minutes };
 }

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { resolveProvider } from "../../src/asr/presets";
 import { localPaths } from "../../src/local/paths";
-import { estimateLocal, readSpeeds, recordSpeed, speedKey } from "../../src/local/speed";
+import { diarSpeedKey, estimateLocal, readSpeeds, recordSpeed, speedKey } from "../../src/local/speed";
 
 const root = mkdtempSync(join(tmpdir(), "vs-speed-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -18,11 +18,32 @@ test("speedKey: parakeet:ultra:<gpu|cpu>", () => {
 });
 
 test("estimateLocal: defaults CPU 8x / GPU 60x when nothing is measured", () => {
-  expect(estimateLocal(loc, 5400, {}, "cpu")).toEqual({ minutes: 11.25, device: "cpu", speed: 8 });
-  expect(estimateLocal(loc, 5400, {}, "gpu")).toEqual({ minutes: 1.5, device: "gpu", speed: 60 });
+  expect(estimateLocal(loc, 5400, {}, "cpu", false)).toEqual({ minutes: 11.25, device: "cpu", speed: 8 });
+  expect(estimateLocal(loc, 5400, {}, "gpu", false)).toEqual({ minutes: 1.5, device: "gpu", speed: 60 });
   // a measured speed for the planned device wins; the other device's does not count
-  expect(estimateLocal(loc, 5400, { "parakeet:ultra:cpu": 30 }, "cpu")).toEqual({ minutes: 3, device: "cpu", speed: 30 });
-  expect(estimateLocal(loc, 5400, { "parakeet:ultra:cpu": 30 }, "gpu").speed).toBe(60);
+  expect(estimateLocal(loc, 5400, { "parakeet:ultra:cpu": 30 }, "cpu", false)).toEqual({ minutes: 3, device: "cpu", speed: 30 });
+  expect(estimateLocal(loc, 5400, { "parakeet:ultra:cpu": 30 }, "gpu", false).speed).toBe(60);
+});
+
+test("diarSpeedKey: parakeet:diar:<gpu|cpu>", () => {
+  expect(diarSpeedKey("cpu")).toBe("parakeet:diar:cpu");
+  expect(diarSpeedKey("gpu")).toBe("parakeet:diar:gpu");
+});
+
+test("estimateLocal with diarization: recognition + diarization time, withoutDiarization = recognition only", () => {
+  // defaults CPU 8x / 16x
+  expect(estimateLocal(loc, 5400, {}, "cpu", true))
+    .toEqual({ minutes: 5400 / 8 / 60 + 5400 / 16 / 60, device: "cpu", speed: 8, withoutDiarization: 5400 / 8 / 60 });
+  // defaults GPU 60x / 100x
+  expect(estimateLocal(loc, 5400, {}, "gpu", true))
+    .toEqual({ minutes: 5400 / 60 / 60 + 5400 / 100 / 60, device: "gpu", speed: 60, withoutDiarization: 5400 / 60 / 60 });
+  // a measured diarization speed for the planned device is used; speed stays the recognition speed
+  expect(estimateLocal(loc, 5400, { "parakeet:ultra:cpu": 30, "parakeet:diar:cpu": 40 }, "cpu", true))
+    .toEqual({ minutes: 3 + 5400 / 40 / 60, device: "cpu", speed: 30, withoutDiarization: 3 });
+  // the other device's diarization speed does not count
+  expect(estimateLocal(loc, 5400, { "parakeet:diar:gpu": 1000 }, "cpu", true).minutes).toBe(5400 / 8 / 60 + 5400 / 16 / 60);
+  // no diarization -> no withoutDiarization
+  expect("withoutDiarization" in estimateLocal(loc, 5400, {}, "cpu", false)).toBe(false);
 });
 
 test("readSpeeds: missing file -> {}", async () => {

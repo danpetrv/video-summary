@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { type Config, type ProviderConfig, DEFAULT_CONFIG } from "../src/config";
 import { type FetchDeps, type FetchFlags, fetchCmd } from "../src/fetch-cmd";
 import { localPaths } from "../src/local/paths";
-import { MODEL } from "../src/local/pins";
+import { DIAR_MODEL, MODEL } from "../src/local/pins";
 import { readMeta, writeMeta } from "../src/meta";
 import { type Fetcher, type Runner, UserError } from "../src/types";
 
@@ -17,6 +17,7 @@ const srt = await Bun.file(join(FX, "sample.ru.srt")).text();
 const wxJson = await Bun.file(join(FX, "whisperx-diarized.json")).json();
 const verboseJson = await Bun.file(join(FX, "openai-verbose.json")).json();
 const parakeetJson = await Bun.file(join(FX, "parakeet-words.json")).text();
+const sceneJsonl = await Bun.file(join(FX, "parakeet-scene.jsonl")).text();
 const root = mkdtempSync(join(tmpdir(), "vs-fetch-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
@@ -139,15 +140,18 @@ test("local provider not installed -> skipped before any download with the `loca
 const NO_DIAR_MODEL = "local: speaker labels skipped — diarization model not installed, run `local install`";
 
 /** A successful parakeet-cli run; the Vulkan build reports the GPU it used, as the real one does. */
-const parakeetOk = (bin: string) => ({
-  code: 0, stdout: parakeetJson, stderr: bin.includes("vulkan") ? "[parakeet] pk::Backend using device: Vulkan0\n" : "",
+const parakeetOk = (bin: string, cmd: string[] = []) => ({
+  code: 0, stdout: cmd.includes("scene") ? sceneJsonl : parakeetJson,
+  stderr: bin.includes("vulkan") && !cmd.includes("scene") ? "[parakeet] pk::Backend using device: Vulkan0\n" : "",
 });
+
+type CliAnswer = { code: number; stdout: string; stderr: string };
 
 /**
  * Fetch deps on a machine where the local engine is installed (CPU build, plus the Vulkan
  * build and library when `gpu`); `cli` answers parakeet-cli runs by binary path.
  */
-function localDeps(env: Env, o: { gpu?: boolean; cli?: (bin: string) => { code: number; stdout: string; stderr: string } } = {}): FetchDeps {
+function localDeps(env: Env, o: { gpu?: boolean; diar?: boolean; cli?: (bin: string, cmd: string[]) => CliAnswer } = {}): FetchDeps {
   const dir = mkdtempSync(join(root, "local-"));
   const xdg = { XDG_DATA_HOME: join(dir, "data"), XDG_CACHE_HOME: join(dir, "cache"), XDG_STATE_HOME: join(dir, "state") };
   const paths = localPaths(xdg, root);
@@ -158,11 +162,15 @@ function localDeps(env: Env, o: { gpu?: boolean; cli?: (bin: string) => { code: 
   mkdirSync(join(paths.model, ".."), { recursive: true });
   writeFileSync(paths.model, "");
   truncateSync(paths.model, MODEL.size); // sparse
+  if (o.diar) {
+    writeFileSync(paths.diarModel, "");
+    truncateSync(paths.diarModel, DIAR_MODEL.size); // sparse
+  }
   const d = deps(env);
   const run: Runner = async (cmd, opts) => {
     if (!cmd[0]!.endsWith("/parakeet-cli")) return d.run(cmd, opts);
     calls.cmds.push(cmd);
-    return (o.cli ?? parakeetOk)(cmd[0]!);
+    return (o.cli ?? parakeetOk)(cmd[0]!, cmd);
   };
   const vulkanLib = "/usr/lib/x86_64-linux-gnu/libvulkan.so.1";
   return { ...d, run, env: xdg, exists: (p: string) => (p === vulkanLib ? !!o.gpu : p.startsWith(dir) && existsSync(p)) };
@@ -247,13 +255,20 @@ test("unknown duration: the slow gate applies after compression, by the real dur
  * Local deps on a simulated clock: every ffmpeg run takes 7 s, a parakeet-cli run on the Vulkan
  * build `gpuMs`, on the CPU build `cpuMs`; `cli` answers by binary path as in localDeps.
  */
-function timedDeps(env: Env, o: { gpuMs: number; cpuMs: number; cli?: (bin: string) => { code: number; stdout: string; stderr: string } }) {
+function timedDeps(env: Env, o: {
+  gpuMs: number; cpuMs: number; diar?: boolean; cli?: (bin: string, cmd: string[]) => CliAnswer;
+  /** per-pass duration overrides for the scene (diarization) runs */
+  sceneGpuMs?: number; sceneCpuMs?: number;
+}) {
   let now = 0;
   const d = localDeps(env, {
     gpu: true,
-    cli: (bin) => {
-      now += bin.includes("vulkan") ? o.gpuMs : o.cpuMs;
-      return (o.cli ?? parakeetOk)(bin);
+    ...(o.diar ? { diar: true } : {}),
+    cli: (bin, cmd) => {
+      const scene = cmd.includes("scene");
+      const gpu = bin.includes("vulkan");
+      now += scene ? (gpu ? o.sceneGpuMs : o.sceneCpuMs) ?? (gpu ? o.gpuMs : o.cpuMs) : gpu ? o.gpuMs : o.cpuMs;
+      return (o.cli ?? parakeetOk)(bin, cmd);
     },
   });
   const run: Runner = async (cmd, opts) => {
@@ -299,6 +314,90 @@ test("after a local run speed.json is updated under the device that actually ran
   const r = await fetchCmd(URL1, { ...flags, force: true }, failed);
   expect(r.asr_provider).toBe("wx");
   expect(speedsOf(failed)).toBeNull();
+});
+
+const SLOW_DIAR =
+  "no ASR provider fits: local: ~17 min on CPU with speaker labels (~12 without); add --accept-slow to wait";
+const SLOW_DIAR_SHORT = (m: number, w: number) =>
+  `no ASR provider fits: local: ~${m} min on CPU with speaker labels (~${w} without); add --accept-slow to wait, or --no-diarize to skip speaker labels`;
+
+test("90-min video, local with the diarization model, CPU defaults -> the gate shows both numbers", async () => {
+  // 5400 s: recognition 11.25 min at 8x + diarization 5.6 min at 16x = 16.9 -> ~17; without ~12 (still over 10)
+  const d = localDeps({ meta: { ...noMeta, duration: 5400 }, providers: [LOCAL] }, { diar: true });
+  const err = await fetchCmd(URL1, flags, d).catch((e) => e);
+  expect(err).toBeInstanceOf(UserError);
+  expect(err.message).toBe(SLOW_DIAR);
+  expect(hasFormatDownload()).toBe(false);
+  expect(calls.cmds.some((c) => c[0] === "ffmpeg")).toBe(false);
+  // a 60-min video: 7.5 + 3.75 = 11.25 -> ~12, without 7.5 -> ~8: the --no-diarize hint
+  const e2 = await fetchCmd(URL1, flags, localDeps({ meta: { ...noMeta, duration: 3600 }, providers: [LOCAL] }, { diar: true })).catch((e) => e);
+  expect(e2.message).toBe(SLOW_DIAR_SHORT(12, 8));
+});
+
+test("slow gate: --no-diarize or a missing diarization model -> the v0.4 text", async () => {
+  const meta = { ...noMeta, duration: 5400 };
+  const off = await fetchCmd(URL1, { ...flags, diarize: false }, localDeps({ meta, providers: [LOCAL] }, { diar: true })).catch((e) => e);
+  expect(off.message).toBe(SLOW);
+  const noModel = await fetchCmd(URL1, flags, localDeps({ meta, providers: [LOCAL] })).catch((e) => e);
+  expect(noModel.message).toBe(SLOW);
+  const cfgOff = { ...LOCAL, diarize: false } as ProviderConfig;
+  const providerOff = await fetchCmd(URL1, flags, localDeps({ meta, providers: [cfgOff] }, { diar: true })).catch((e) => e);
+  expect(providerOff.message).toBe(SLOW);
+});
+
+test("slow gate: a model of the wrong size does not count as diarization", async () => {
+  const d = localDeps({ meta: { ...noMeta, duration: 5400 }, providers: [LOCAL] }, { diar: true });
+  truncateSync(localPaths(d.env, d.home).diarModel, DIAR_MODEL.size - 1);
+  const err = await fetchCmd(URL1, flags, d).catch((e) => e);
+  expect(err.message).toBe(SLOW);
+});
+
+test("slow gate uses the measured diarization speed from speed.json", async () => {
+  // 30 min: recognition 30 min / 30x = 1 min, diarization at a measured 2x = 15 min -> ~16 total, ~1 without
+  const d = localDeps({ meta: { ...noMeta, duration: 1800 }, providers: [LOCAL] }, { diar: true });
+  const file = localPaths(d.env, d.home).speedFile;
+  mkdirSync(join(file, ".."), { recursive: true });
+  writeFileSync(file, JSON.stringify({ "parakeet:ultra:cpu": 30, "parakeet:diar:cpu": 2 }));
+  const err = await fetchCmd(URL1, flags, d).catch((e) => e);
+  expect(err.message).toBe(SLOW_DIAR_SHORT(16, 1));
+});
+
+test("with --accept-slow the 90-min local run with speaker labels proceeds", async () => {
+  const r = await fetchCmd(URL1, { ...flags, acceptSlow: true }, localDeps({ meta: { ...noMeta, duration: 5400 }, providers: [LOCAL] }, { diar: true }));
+  expect([r.asr_provider, r.diarized, r.speakers]).toEqual(["local", true, 2]);
+});
+
+test("diarization speed is recorded under parakeet:diar:<device> of the pass that ran", async () => {
+  // GPU: recognition 10 s, scene 5 s -> 213/10 and 213/5
+  const gpu = timedDeps({ meta: noMeta, providers: [LOCAL] }, { gpuMs: 10_000, cpuMs: 99_000, sceneGpuMs: 5_000, diar: true });
+  const r = await fetchCmd(URL1, flags, gpu);
+  expect([r.diarized, r.asr_failed]).toEqual([true, undefined]);
+  expect(speedsOf(gpu)).toEqual({ "parakeet:ultra:gpu": 21.3, "parakeet:diar:gpu": 42.6 });
+
+  // device cpu: only cpu keys
+  const cpu = timedDeps({ meta: noMeta, providers: [{ ...LOCAL, device: "cpu" } as ProviderConfig] }, {
+    gpuMs: 1, cpuMs: 20_000, sceneCpuMs: 10_000, diar: true,
+  });
+  await fetchCmd(URL1, { ...flags, force: true }, cpu);
+  expect(speedsOf(cpu)).toEqual({ "parakeet:ultra:cpu": 10.65, "parakeet:diar:cpu": 21.3 });
+
+  // planned GPU, recognition on GPU (10 s), diarization fails on GPU (30 s) and succeeds on CPU (5 s):
+  // cpu key = 213/5, gpu key (the planned one) = the whole diarization path, 213/35
+  const fallback = timedDeps({ meta: noMeta, providers: [LOCAL] }, {
+    gpuMs: 10_000, cpuMs: 99_000, sceneGpuMs: 30_000, sceneCpuMs: 5_000, diar: true,
+    cli: (bin, cmd) => cmd.includes("scene") && bin.includes("vulkan") ? { code: 1, stdout: "", stderr: "boom" } : parakeetOk(bin, cmd),
+  });
+  const fr = await fetchCmd(URL1, { ...flags, force: true }, fallback);
+  expect(fr.diarized).toBe(true);
+  expect(speedsOf(fallback)).toEqual({ "parakeet:ultra:gpu": 21.3, "parakeet:diar:cpu": 42.6, "parakeet:diar:gpu": 213 / 35 });
+
+  // a failed diarization records no diarization speed
+  const bad = timedDeps({ meta: noMeta, providers: [LOCAL] }, {
+    gpuMs: 10_000, cpuMs: 99_000, sceneGpuMs: 5_000, diar: true,
+    cli: (bin, cmd) => cmd.includes("scene") ? { code: 1, stdout: "", stderr: "boom" } : parakeetOk(bin, cmd),
+  });
+  await fetchCmd(URL1, { ...flags, force: true }, bad);
+  expect(speedsOf(bad)).toEqual({ "parakeet:ultra:gpu": 21.3 });
 });
 
 test("local provider and a video in an unsupported language -> the next provider, before any download", async () => {

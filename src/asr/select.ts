@@ -33,8 +33,11 @@ export async function probeProviders(
   }));
 }
 
-/** Expected wall time of a slow (local CPU) run; used by the slow-run gate. */
-export type SlowEstimate = { minutes: number; device: "gpu" | "cpu"; speed: number };
+/**
+ * Expected wall time of a slow (local CPU) run; used by the slow-run gate. With speaker labels `minutes`
+ * includes the diarization pass and `withoutDiarization` is the time without it; `speed` is recognition's.
+ */
+export type SlowEstimate = { minutes: number; device: "gpu" | "cpu"; speed: number; withoutDiarization?: number };
 
 export type SelectInput = {
   candidates: Candidate[]; durationSec: number; language: string | null; acceptSlow: boolean;
@@ -51,6 +54,10 @@ function reject(c: Candidate, i: SelectInput): string | null {
   if (c.provider.type === "local" && !i.acceptSlow) {
     const e = i.estimate(c.provider, i.durationSec);
     if (e && e.minutes > SLOW_MINUTES) {
+      if (e.withoutDiarization !== undefined) {
+        const withLabels = `~${Math.ceil(e.minutes)} min on ${e.device.toUpperCase()} with speaker labels (~${Math.ceil(e.withoutDiarization)} without); add --accept-slow to wait`;
+        return e.withoutDiarization <= SLOW_MINUTES ? `${withLabels}, or --no-diarize to skip speaker labels` : withLabels;
+      }
       return `~${Math.ceil(e.minutes)} min on ${e.device.toUpperCase()} (measured speed ${Math.round(e.speed)}x); add --accept-slow to wait`;
     }
   }

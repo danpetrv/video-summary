@@ -10,7 +10,7 @@ import { type Config, expandHome } from "./config";
 import { localStatus } from "./local/install";
 import { plannedDevice } from "./local/parakeet";
 import { localPaths } from "./local/paths";
-import { estimateLocal, readSpeeds, recordSpeed, speedKey } from "./local/speed";
+import { diarSpeedKey, estimateLocal, readSpeeds, recordSpeed, speedKey } from "./local/speed";
 import { estimateTokens, type Meta, readMeta, type Source, writeMeta } from "./meta";
 import { findSidecarSubs, resolveInputPath, resolveItemDir } from "./paths";
 import { type Cue, type Fetcher, type Platform, type Runner, UserError } from "./types";
@@ -75,7 +75,10 @@ async function recognize(
   const speedFile = localPaths(d.env, d.home).speedFile;
   const speeds = local ? await readSpeeds(speedFile) : {};
   const estimate = (p: ResolvedProvider, durationSec: number) =>
-    p.type === "local" ? estimateLocal(p, durationSec, speeds, plannedDevice(p, d)) : null;
+    p.type === "local"
+      // the diarization pass counts only if it will run: labels asked for, enabled for the provider, model in place
+      ? estimateLocal(p, durationSec, speeds, plannedDevice(p, d), flags.diarize && p.diarize && !!local?.diarization.verified)
+      : null;
   const select = (cs: Candidate[], durationSec: number) =>
     chooseProvider({ candidates: cs, durationSec, language, acceptSlow: flags.acceptSlow ?? false, estimate });
   const pick = (durationSec: number): ResolvedProvider => {
@@ -111,6 +114,12 @@ async function recognize(
         if (asr.plannedDevice && asr.plannedDevice !== asr.device && asr.pathElapsedMs !== undefined) {
           await noteSpeed(speedFile, speedKey(provider, asr.plannedDevice), durationSec, asr.pathElapsedMs);
         }
+      }
+      if (provider.type === "local" && asr.diarization) {
+        const dz = asr.diarization;
+        await noteSpeed(speedFile, diarSpeedKey(dz.device), durationSec, dz.elapsedMs);
+        // Same as recognition: the estimate reads the planned device's key, so it learns the whole path.
+        if (dz.plannedDevice !== dz.device) await noteSpeed(speedFile, diarSpeedKey(dz.plannedDevice), durationSec, dz.pathElapsedMs);
       }
       // Non-fatal problems of the provider that succeeded (GPU failed, CPU used) are reported alongside.
       return { asr, failed: [...failed, ...(asr.notes ?? [])] };

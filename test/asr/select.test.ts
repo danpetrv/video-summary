@@ -53,6 +53,25 @@ test("chooseProvider: local over 10 min without acceptSlow -> rejected with the 
     .toEqual({ error: "no ASR provider fits: local: local engine not installed — run `local install`" });
 });
 
+test("chooseProvider: gate with diarization shows both numbers", () => {
+  const withDiar = (minutes: number, withoutDiarization: number): SelectInput["estimate"] =>
+    () => ({ minutes, device: "cpu", speed: 8, withoutDiarization });
+  // without diarization it fits: offer --no-diarize
+  expect(chooseProvider({ ...base, estimate: withDiar(16.9, 9.4), candidates: [ok(loc)] })).toEqual({
+    error: "no ASR provider fits: local: ~17 min on CPU with speaker labels (~10 without); add --accept-slow to wait, or --no-diarize to skip speaker labels",
+  });
+  // slow either way: only --accept-slow
+  expect(chooseProvider({ ...base, estimate: withDiar(25, 18), candidates: [ok(loc)] })).toEqual({
+    error: "no ASR provider fits: local: ~25 min on CPU with speaker labels (~18 without); add --accept-slow to wait",
+  });
+  // withoutDiarization of exactly 10 still fits
+  expect(chooseProvider({ ...base, estimate: withDiar(15, 10), candidates: [ok(loc)] })).toEqual({
+    error: "no ASR provider fits: local: ~15 min on CPU with speaker labels (~10 without); add --accept-slow to wait, or --no-diarize to skip speaker labels",
+  });
+  // total within the threshold -> not gated
+  expect(chooseProvider({ ...base, estimate: withDiar(10, 6), candidates: [ok(loc)] })).toEqual({ provider: loc });
+});
+
 test("chooseProvider: local over 10 min with acceptSlow -> chosen", () => {
   expect(chooseProvider({ ...base, acceptSlow: true, estimate: slow(90), candidates: [ok(loc), ok(wx)] })).toEqual({ provider: loc });
 });
