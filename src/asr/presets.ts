@@ -6,7 +6,7 @@ export type RemoteProvider = {
   name: string; type: "whisperx" | "openai-compatible"; url: string; model: string | null;
   diarize: boolean; keyFile: string | null; keyEnv: string | null; engine: null; device: null;
 };
-/** On-device recognition: no server, no key, no speaker labels. */
+/** On-device recognition: no server, no key; speaker labels from a second on-device pass when `diarize`. */
 export type LocalProvider = {
   name: string; type: "local"; url: null; model: "ultra"; diarize: boolean;
   keyFile: null; keyEnv: null; engine: "parakeet"; device: "auto" | "cpu";

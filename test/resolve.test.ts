@@ -17,7 +17,7 @@ test("resolveProvider: openai-compatible — url/model/keys from config, never d
     .toThrow("config: provider o: model is required");
 });
 
-test("resolveProvider: local — no url or keys, never diarized; engine/model/device from config", () => {
+test("resolveProvider: local — no url or keys; diarize/engine/model/device from config", () => {
   expect(resolveProvider({ name: "local", type: "local", engine: "parakeet", model: "ultra", device: "auto", diarize: true })).toEqual({
     name: "local", type: "local", url: null, model: "ultra", diarize: true, keyFile: null, keyEnv: null,
     engine: "parakeet", device: "auto",

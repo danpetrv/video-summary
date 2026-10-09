@@ -135,6 +135,9 @@ test("local provider not installed -> skipped before any download with the `loca
   expect(hasFormatDownload()).toBe(false);
 });
 
+// localDeps installs no diarization model: with speaker labels on, the local run says so.
+const NO_DIAR_MODEL = "local: speaker labels skipped — diarization model not installed, run `local install`";
+
 /** A successful parakeet-cli run; the Vulkan build reports the GPU it used, as the real one does. */
 const parakeetOk = (bin: string) => ({
   code: 0, stdout: parakeetJson, stderr: bin.includes("vulkan") ? "[parakeet] pk::Backend using device: Vulkan0\n" : "",
@@ -167,7 +170,7 @@ function localDeps(env: Env, o: { gpu?: boolean; cli?: (bin: string) => { code: 
 
 test("local provider end to end: fetch with [local] -> source asr, asr_provider local, transcript from the words", async () => {
   const r = await fetchCmd(URL1, flags, localDeps({ meta: noMeta, providers: [LOCAL] }));
-  expect([r.source, r.asr_provider, r.diarized, r.speakers, r.asr_failed]).toEqual(["asr", "local", false, 0, undefined]);
+  expect([r.source, r.asr_provider, r.diarized, r.speakers, r.asr_failed]).toEqual(["asr", "local", false, 0, [NO_DIAR_MODEL]]);
   const tr = await Bun.file(r.transcript_path).text();
   expect(tr).toContain("Погнали, привет.");
   expect(tr).toContain("что думает чат?");
@@ -185,7 +188,7 @@ test("local GPU fallback note appears in asr_failed", async () => {
   });
   const r = await fetchCmd(URL1, flags, d);
   expect(r.asr_provider).toBe("local");
-  expect(r.asr_failed).toEqual(["local: GPU run failed (error: vk::Device::createBuffer: ErrorOutOfDeviceMemory), used CPU"]);
+  expect(r.asr_failed).toEqual(["local: GPU run failed (error: vk::Device::createBuffer: ErrorOutOfDeviceMemory), used CPU", NO_DIAR_MODEL]);
 });
 
 test("local no speech -> next provider (whisperx) is used, asr_failed names local", async () => {
@@ -280,7 +283,7 @@ test("after a local run speed.json is updated under the device that actually ran
     gpuMs: 20_000, cpuMs: 99_000, cli: () => ({ code: 0, stdout: parakeetJson, stderr: "ggml_vulkan: No devices found.\n" }),
   });
   const nd = await fetchCmd(URL1, { ...flags, force: true }, noDevice);
-  expect(nd.asr_failed).toEqual(["local: no GPU device found, ran on CPU"]);
+  expect(nd.asr_failed).toEqual(['local: no GPU device found, ran on CPU — set "device": "cpu" for local to skip the GPU attempt', NO_DIAR_MODEL]);
   expect(speedsOf(noDevice)).toEqual({ "parakeet:ultra:cpu": 10.65, "parakeet:ultra:gpu": 10.65 });
 
   // device cpu in config: only the cpu key

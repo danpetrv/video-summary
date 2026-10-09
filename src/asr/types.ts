@@ -8,6 +8,9 @@ export type AsrResult = {
   elapsedMs?: number; // local engine: process time of the run that produced the result
   plannedDevice?: "gpu" | "cpu"; // local engine: the device the run started on (the slow-run estimate reads its speed)
   pathElapsedMs?: number; // local engine: time from the first engine run to the end of the one that succeeded
+  // local engine, after a successful diarization pass: where it ran, the device the run started on, process time
+  // of the scene run that succeeded and time from the first scene run (a failed GPU attempt included)
+  diarization?: { device: "gpu" | "cpu"; plannedDevice: "gpu" | "cpu"; elapsedMs: number; pathElapsedMs: number };
   notes?: string[]; // non-fatal problems worth reporting (e.g. GPU failed, CPU used)
 };
 

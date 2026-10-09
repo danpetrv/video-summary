@@ -76,7 +76,9 @@ export type AsrDeps = {
 };
 
 export async function transcribeWith(p: ResolvedProvider, file: string, o: AsrOptions, d: AsrDeps): Promise<AsrResult> {
-  if (p.type === "local") return { ...(await transcribeParakeet(file, p, d)), language: o.language };
+  if (p.type === "local") {
+    return { ...(await transcribeParakeet(file, p, d, { diarize: o.diarize && p.diarize })), language: o.language };
+  }
   const key = await readKey(p, d.env, d.home);
   return p.type === "whisperx" ? transcribeWhisperx(file, o, p, key, d.fetch) : transcribeOpenAI(file, o, p, key, d.fetch);
 }

@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { resolveProvider, type ResolvedProvider } from "../../src/asr/presets";
 import { type AsrDeps, type Candidate, chooseProvider, probeProviders, type SelectInput, transcribeWith } from "../../src/asr/select";
 import { localPaths } from "../../src/local/paths";
+import { DIAR_MODEL } from "../../src/local/pins";
 import type { Fetcher, Runner } from "../../src/types";
 
 const own = resolveProvider({ name: "own", type: "openai-compatible", url: "http://own/v1", model: "m", keyEnv: "OWN_KEY" });
@@ -80,26 +81,42 @@ test("chooseProvider: local skipped for a known unsupported language (ja); allow
   expect(chooseProvider({ ...base, language: "ja", candidates: [ok(wx)] })).toEqual({ provider: wx });
 });
 
-test("transcribeWith: local -> parakeet-cli on the installed build; language comes from the options", async () => {
+test("transcribeWith: local -> parakeet-cli on the installed build; language from the options; speaker labels need --diarize and provider diarize", async () => {
   const dir = await mkdtemp(join(tmpdir(), "t6-"));
   const env = { XDG_DATA_HOME: join(dir, "data"), XDG_CACHE_HOME: join(dir, "cache") };
-  const cli = localPaths(env, dir).cli("linux-cpu-x64");
+  const paths = localPaths(env, dir);
+  const cli = paths.cli("linux-cpu-x64");
   await mkdir(dirname(cli), { recursive: true });
   await writeFile(cli, "");
+  await mkdir(dirname(paths.diarModel), { recursive: true });
+  await writeFile(paths.diarModel, "");
+  await truncate(paths.diarModel, DIAR_MODEL.size);
   const words = await Bun.file(join(import.meta.dir, "../fixtures/parakeet-words.json")).text();
-  const ran: string[] = [];
+  const scene = await Bun.file(join(import.meta.dir, "../fixtures/parakeet-scene.jsonl")).text();
+  let ran: string[] = [];
   const run: Runner = async (cmd) => {
-    ran.push(cmd[0]!);
+    ran.push(cmd[0] === "ffmpeg" ? "ffmpeg" : `${cmd[0]} ${cmd[1]}`);
     if (cmd[0] === "ffmpeg") return { code: 0, stdout: "", stderr: "" };
-    return { code: 0, stdout: words, stderr: "" };
+    return { code: 0, stdout: cmd[1] === "scene" ? scene : words, stderr: "" };
   };
   const f: Fetcher = async (u) => { throw new Error(`local must not use the network: ${u}`); };
   const d = { ...asrDeps(f, dir), env, run, exists: existsSync };
-  const r = await transcribeWith(loc, join(dir, "audio.ogg"), { language: "ru", diarize: true }, d);
-  expect(ran).toEqual(["ffmpeg", cli]);
-  expect([r.provider, r.language, r.diarized, r.device, r.cues[0]!.text]).toEqual(["local", "ru", false, "cpu", "Погнали, привет."]);
-  const r2 = await transcribeWith(loc, join(dir, "audio.ogg"), { language: null, diarize: false }, d);
-  expect(r2.language).toBeNull();
+  const audio = join(dir, "audio.ogg");
+  const r = await transcribeWith(loc, audio, { language: "ru", diarize: true }, d);
+  expect(ran).toEqual(["ffmpeg", `${cli} transcribe`, `${cli} scene`]);
+  expect([r.provider, r.language, r.diarized, r.speakers, r.device, r.cues[0]!.text])
+    .toEqual(["local", "ru", true, 2, "cpu", "Погнали, привет."]);
+
+  ran = [];
+  const r2 = await transcribeWith(loc, audio, { language: null, diarize: false }, d);
+  expect(ran).toEqual(["ffmpeg", `${cli} transcribe`]);
+  expect([r2.language, r2.diarized, r2.notes]).toEqual([null, false, undefined]);
+
+  // the provider has speaker labels off: no scene run, no note, whatever the flag says
+  ran = [];
+  const r3 = await transcribeWith({ ...loc, diarize: false }, audio, { language: null, diarize: true }, d);
+  expect(ran).toEqual(["ffmpeg", `${cli} transcribe`]);
+  expect([r3.diarized, r3.notes]).toEqual([false, undefined]);
 });
 
 test("chooseProvider: empty list", () => {
