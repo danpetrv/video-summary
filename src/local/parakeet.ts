@@ -1,6 +1,6 @@
 import { rm } from "node:fs/promises";
 import { availableParallelism } from "node:os";
-import type { LocalProvider } from "../asr/presets";
+import type { LocalProvider } from "../asr/providers";
 import type { AsrResult } from "../asr/types";
 import { oneLine } from "../net";
 import { type Cue, type Platform, type RunResult, type Runner, UserError } from "../types";

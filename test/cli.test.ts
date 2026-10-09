@@ -31,7 +31,7 @@ const call = (argv: string[], over: Partial<CliDeps> = {}) => main(argv, deps(ov
 
 test("check without config -> config.exists false, ok false, still JSON", async () => {
   const r = (await call(["check"])) as any;
-  expect(r.config).toEqual({ path: cfgFile, exists: false, valid: false, warnings: [] });
+  expect(r.config).toEqual({ path: cfgFile, exists: false, valid: false });
   expect(r.ok).toBe(false);
   expect(r.deps.ok).toBe(true);
   expect(r.readeck).toBe("disabled");
@@ -47,17 +47,13 @@ test("check with broken config -> config.valid false, error with field path", as
   expect(r.ok).toBe(false);
 });
 
-test("check reports migration warnings and stays valid", async () => {
+test("check with a cloud preset of old versions -> config invalid, error names the field", async () => {
   writeFileSync(cfgFile, JSON.stringify({
-    providers: [{ name: "groq", type: "openai-compatible", preset: "groq", tier: "free", keyEnv: "GROQ_API_KEY" }],
+    providers: [{ name: "groq", type: "openai-compatible", preset: "groq", keyEnv: "GROQ_API_KEY" }],
   }));
   const r = (await call(["check"])) as any;
-  expect(r.config).toEqual({
-    path: cfgFile, exists: true, valid: true,
-    warnings: ['providers[0] "groq": cloud providers were removed in v0.4.0 — skipped'],
-  });
-  expect(r.ok).toBe(true);
-  expect(r.providers).toEqual([]);
+  expect(r.config).toEqual({ path: cfgFile, exists: true, valid: false, error: "config: providers[0].preset: unknown key" });
+  expect(r.ok).toBe(false);
 });
 
 test("check with valid config -> ok true, providers probed, readeck configured", async () => {
@@ -70,7 +66,6 @@ test("check with valid config -> ok true, providers probed, readeck configured",
   expect(r.runtime).toEqual({ name: "node", version: "24.0.0" });
   expect(r.providers).toEqual([{ name: "w", available: false, keyMissing: null }]);
   expect(r.readeck).toBe("configured");
-  expect(r.config.warnings).toEqual([]);
 });
 
 const PARAKEET = {
@@ -179,21 +174,6 @@ test("config path / get / set", async () => {
   expect(((await call(["config", "get"])) as any).outputDir).toBe("~/notes");
   await expect(call(["config", "set", "providers", '[{"name":"g"}]'])).rejects.toBeInstanceOf(UserError);
   await expect(call(["config", "get", "nope"])).rejects.toBeInstanceOf(UserError);
-});
-
-test("config limits is gone -> usage error; usage mentions neither limits nor --allow-cloud", async () => {
-  await call(["config", "init"]);
-  const err = (await call(["config", "limits"]).catch((e) => e)) as Error;
-  expect(err).toBeInstanceOf(UserError);
-  expect(err.message).toMatch(/^usage:/);
-  expect(err.message).not.toMatch(/limits|allow-cloud/);
-});
-
-test("fetch: --allow-cloud from an old SKILL.md is accepted and ignored", async () => {
-  await call(["config", "init"]);
-  // gets past argument parsing to yt-dlp (which fails in this stub), not a usage error
-  const err = (await call(["fetch", "--allow-cloud", "https://x.example/v"]).catch((e) => e)) as Error;
-  expect(err.message).toStartWith("yt-dlp");
 });
 
 test("fetch: --accept-slow is a flag, not the source; usage lists it", async () => {
@@ -317,27 +297,9 @@ test("malformed key never reaches stdout/stderr of the real CLI (check, readeck)
   }
 }, 20_000);
 
-test("fetch returns config migration warnings (v0.3 openai-compatible without `local`); a clean config has none", async () => {
-  const out = join(root, `out-${n}`);
-  const media = join(root, `clip-${n}.mp4`);
-  writeFileSync(media, "x");
-  writeFileSync(join(root, `clip-${n}.srt`), "1\n00:00:01,000 --> 00:00:04,500\nHello there.\n");
-  const run = async (cmd: string[]) =>
-    cmd[0] === "ffprobe" ? { code: 0, stdout: "10\n", stderr: "" } : { code: 127, stdout: "", stderr: "" };
-  writeFileSync(cfgFile, JSON.stringify({
-    outputDir: out, bitrate: 32,
-    providers: [{ name: "own", type: "openai-compatible", url: "http://own.example/v1", model: "m" }],
-  }));
-  const r = (await call(["fetch", media], { run })) as any;
-  expect(r.source).toBe("sidecar-subs");
-  expect(r.warnings).toEqual([
-    "bitrate: removed in v0.4.0 — ignored",
-    'providers[0] "own": now treated as your own server — local files are sent to it without asking',
-  ]);
-  // a repeat takes the early "already exists" path and still carries them
-  expect(((await call(["fetch", media], { run })) as any).warnings).toEqual(r.warnings);
-
-  writeFileSync(cfgFile, JSON.stringify({ outputDir: out, providers: [] }));
-  const clean = (await call(["fetch", media, "--force"], { run })) as any;
-  expect("warnings" in clean).toBe(false);
+test("fetch with a setting of old versions in the config -> UserError naming the field", async () => {
+  writeFileSync(cfgFile, JSON.stringify({ bitrate: 32, providers: [] }));
+  const err = (await call(["fetch", "https://x.example/v"]).catch((e) => e)) as Error;
+  expect(err).toBeInstanceOf(UserError);
+  expect(err.message).toBe("config: bitrate: unknown key");
 });

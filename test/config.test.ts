@@ -5,7 +5,7 @@ import { join } from "node:path";
 import {
   DEFAULT_CONFIG, configPath, expandHome, keySource, loadConfig, parseConfig, readKey, saveConfig, setValue,
 } from "../src/config";
-import { resolveProvider } from "../src/asr/presets";
+import { resolveProvider } from "../src/asr/providers";
 import type { LocalProviderConfig } from "../src/config";
 import { UserError } from "../src/types";
 
@@ -164,18 +164,16 @@ test("local: diarize false is kept", () => {
 });
 
 test("local: diarize must be boolean", () => {
-  expect(() => parseConfig({ providers: [{ name: "l", type: "local", diarize: "no" }] }, []))
+  expect(() => parseConfig({ providers: [{ name: "l", type: "local", diarize: "no" }] }))
     .toThrow("config: providers[0].diarize: must be true or false");
 });
 
 test("local provider: url/keyFile/other model -> error with field path", () => {
-  const bad = (extra: object) => () => parseConfig({ providers: [{ name: "l", type: "local", ...extra }] }, []);
+  const bad = (extra: object) => () => parseConfig({ providers: [{ name: "l", type: "local", ...extra }] });
   for (const k of ["url", "keyFile", "keyEnv"]) {
     expect(bad({ [k]: "x" })).toThrow(`config: providers[0].${k}: not allowed for type local`);
   }
-  // strict: no soft migration for the new type
-  expect(bad({ tier: "free" })).toThrow("config: providers[0].tier: not allowed for type local");
-  expect(bad({ preset: "groq" })).toThrow("config: providers[0].preset: not allowed for type local");
+  expect(bad({ preset: "groq" })).toThrow("config: providers[0].preset: unknown key");
   expect(bad({ nope: 1 })).toThrow("config: providers[0].nope: unknown key");
   expect(bad({ model: "large-v3" })).toThrow('config: providers[0].model: must be "ultra"');
   expect(bad({ engine: "whisper" })).toThrow('config: providers[0].engine: must be "parakeet"');
@@ -188,110 +186,26 @@ test("local provider: url/keyFile/other model -> error with field path", () => {
     .toThrow('config: providers[0].type: unknown type "grpc" (whisperx, openai-compatible, local)');
 });
 
-test("migration: groq/openai presets skipped with a warning, whisperx kept", () => {
-  const w: string[] = [];
-  const c = parseConfig({ bitrate: "fixed", providers: [
+test("settings of the cloud era are unknown keys: the config is invalid, with the field path", () => {
+  expect(() => parseConfig({ bitrate: "adaptive" })).toThrow("config: bitrate: unknown key");
+  expect(() => parseConfig({ providers: [
     { name: "wx", type: "whisperx", url: "https://a" },
-    { name: "groq", type: "openai-compatible", preset: "groq", tier: "free", keyFile: "~/g.key" },
-  ] }, w);
-  expect(c.providers).toEqual([{ name: "wx", type: "whisperx", url: "https://a" }]);
-  expect(c).not.toHaveProperty("bitrate");
-  expect(w).toEqual([
-    "bitrate: removed in v0.4.0 — ignored",
-    'providers[1] "groq": cloud providers were removed in v0.4.0 — skipped',
-  ]);
-  // a skipped provider does not hold its name: a later provider may reuse it
-  const c2 = parseConfig({ providers: [
-    { name: "o", type: "openai-compatible", preset: "openai", diarize: true },
-    { name: "o", type: "openai-compatible", url: "http://h/v1", model: "m" },
-  ] });
-  expect(c2.providers.map((p) => p.name)).toEqual(["o"]);
-  // without a warnings array parsing is just as lenient
-  expect(parseConfig({ bitrate: "wat" })).toEqual(DEFAULT_CONFIG);
-});
-
-test("migration: maxBytes/maxSeconds/local on whisperx and diarize on openai-compatible are ignored with warnings", () => {
-  const w: string[] = [];
-  const c = parseConfig({ providers: [
-    { name: "wx", type: "whisperx", url: "https://a", tier: "free", maxBytes: 25_000_000, maxSeconds: null, local: true, diarize: false },
-    { name: "own", type: "openai-compatible", url: "http://h/v1", model: "m", local: true, diarize: true, maxBytes: -1 },
-  ] }, w);
-  expect(c.providers).toEqual([
-    { name: "wx", type: "whisperx", url: "https://a", diarize: false },
-    { name: "own", type: "openai-compatible", url: "http://h/v1", model: "m" },
-  ]);
-  expect(w).toEqual([
-    "providers[0].tier: removed in v0.4.0 — ignored",
-    "providers[0].maxBytes: removed in v0.4.0 — ignored",
-    "providers[0].maxSeconds: removed in v0.4.0 — ignored",
-    "providers[0].local: removed in v0.4.0 — ignored",
-    "providers[1].maxBytes: removed in v0.4.0 — ignored",
-    "providers[1].local: removed in v0.4.0 — ignored",
-    "providers[1].diarize: removed in v0.4.0 — ignored",
-  ]);
-  // still strict about keys that never existed and about the remaining fields
-  expect(() => parseConfig({ providers: [{ name: "wx", type: "whisperx", url: "https://a", nope: 1 }] }))
-    .toThrow("config: providers[0].nope: unknown key");
+    { name: "groq", type: "openai-compatible", preset: "groq", keyFile: "~/g.key" },
+  ] })).toThrow("config: providers[1].preset: unknown key");
+  for (const k of ["tier", "maxBytes", "maxSeconds", "local"]) {
+    expect(() => parseConfig({ providers: [{ name: "wx", type: "whisperx", url: "https://a", [k]: 1 }] }))
+      .toThrow(`config: providers[0].${k}: unknown key`);
+  }
+  // speaker labels belong to whisperx (and local), never to openai-compatible
+  expect(() => parseConfig({ providers: [{ name: "own", type: "openai-compatible", url: "http://h/v1", model: "m", diarize: true }] }))
+    .toThrow("config: providers[0].diarize: unknown key");
+  expect(parseConfig({ providers: [{ name: "wx", type: "whisperx", url: "https://a", diarize: false }] }).providers)
+    .toEqual([{ name: "wx", type: "whisperx", url: "https://a", diarize: false }]);
   expect(() => parseConfig({ providers: [{ name: "wx", type: "whisperx", url: "https://a", diarize: "yes" }] }))
     .toThrow("config: providers[0].diarize: must be true or false");
 });
 
-test("migration: a provider v0.3 counted as cloud (not local) is now the user's own server -> warning", () => {
-  const own = (i: number, name: string) =>
-    `providers[${i}] "${name}": now treated as your own server — local files are sent to it without asking`;
-  const w: string[] = [];
-  // a v0.3 config (it has bitrate): openai-compatible without preset defaulted to local: false
-  parseConfig({ bitrate: "adaptive", providers: [
-    { name: "own", type: "openai-compatible", url: "http://h/v1", model: "m" },
-    { name: "own2", type: "openai-compatible", url: "http://h2/v1", model: "m", local: false },
-    { name: "mine", type: "openai-compatible", url: "http://h3/v1", model: "m", local: true },
-    { name: "wx", type: "whisperx", url: "https://a" },
-    { name: "wx2", type: "whisperx", url: "https://b", local: false },
-  ] }, w);
-  expect(w).toEqual([
-    "bitrate: removed in v0.4.0 — ignored",
-    own(0, "own"),
-    "providers[1].local: removed in v0.4.0 — ignored",
-    own(1, "own2"),
-    "providers[2].local: removed in v0.4.0 — ignored",
-    "providers[4].local: removed in v0.4.0 — ignored",
-    own(4, "wx2"),
-  ]);
-  // any v0.3-only setting marks the config as old, not just bitrate
-  const w2: string[] = [];
-  parseConfig({ providers: [
-    { name: "groq", type: "openai-compatible", preset: "groq" },
-    { name: "own", type: "openai-compatible", url: "http://h/v1", model: "m" },
-  ] }, w2);
-  expect(w2).toContain(own(1, "own"));
-  // a v0.4 config: openai-compatible has no local key at all, nothing to warn about
-  const w3: string[] = [];
-  parseConfig({ providers: [{ name: "own", type: "openai-compatible", url: "http://h/v1", model: "m" }] }, w3);
-  expect(w3).toEqual([]);
-});
-
-test("saveConfig after migration writes the cleaned config", async () => {
-  const p = join(tmp, "old.json");
-  writeFileSync(p, JSON.stringify({ bitrate: "adaptive", providers: [
-    { name: "wx", type: "whisperx", url: "https://a", local: true },
-    { name: "groq", type: "openai-compatible", preset: "groq", keyEnv: "G" },
-  ] }));
-  const w: string[] = [];
-  const cfg = (await loadConfig(p, w))!;
-  expect(w).toHaveLength(3);
-  await saveConfig(p, setValue(cfg, "summaryLength", "short"));
-  const raw = JSON.parse(readFileSync(p, "utf8"));
-  expect(raw).not.toHaveProperty("bitrate");
-  expect(raw.providers).toEqual([{ name: "wx", type: "whisperx", url: "https://a" }]);
-  expect(raw.summaryLength).toBe("short");
-  const again: string[] = [];
-  await loadConfig(p, again);
-  expect(again).toEqual([]);
-});
-
-test("setValue: a value with removed settings is rejected, nothing silently dropped", () => {
+test("setValue: a provider list with a cloud preset is refused with the field path", () => {
   expect(() => setValue(DEFAULT_CONFIG, "providers", [{ name: "groq", type: "openai-compatible", preset: "groq" }]))
-    .toThrow(/^config: providers: not saved: providers\[0\] "groq": cloud providers were removed in v0\.4\.0$/);
-  expect(() => setValue(DEFAULT_CONFIG, "providers", [{ name: "wx", type: "whisperx", url: "https://a", maxBytes: 5 }]))
-    .toThrow(/^config: providers: not saved: providers\[0\]\.maxBytes: removed in v0\.4\.0$/);
+    .toThrow("config: providers[0].preset: unknown key");
 });

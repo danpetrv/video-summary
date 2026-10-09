@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { LocalProvider } from "../asr/presets";
+import type { LocalProvider } from "../asr/providers";
 import type { SlowEstimate } from "../asr/select";
 
 /** A local run expected to take longer than this needs `--accept-slow`. */

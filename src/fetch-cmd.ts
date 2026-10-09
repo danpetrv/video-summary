@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
-import { type ResolvedProvider, resolveProvider } from "./asr/presets";
+import { type ResolvedProvider, resolveProvider } from "./asr/providers";
 import { type Candidate, chooseProvider, probeProviders, transcribeWith } from "./asr/select";
 import { type AsrResult, primaryLang } from "./asr/types";
 import { compressAudio, probeDuration } from "./audio";
@@ -23,7 +23,6 @@ export type FetchDeps = {
   // for the local engine's install status
   platform: Platform; arch: "x64" | "arm64"; exists: (p: string) => boolean; has: (bin: string) => boolean;
   clock?: () => number; // ms; times local runs for the speed store (default Date.now)
-  warnings?: string[]; // config migration warnings from loadConfig, passed through to the result
 };
 export type FetchResult = {
   dir: string;
@@ -39,7 +38,6 @@ export type FetchResult = {
   transcript_tokens: number;
   url: string | null;
   asr_failed?: string[]; // providers that failed before the one that recognized the audio
-  warnings?: string[]; // config migration warnings (as in `check`); absent when there are none
 };
 
 type Got = { cues: Cue[]; source: Source; asr: AsrResult | null; asrFailed?: string[] };
@@ -216,7 +214,7 @@ export async function fetchCmd(input: string, flags: FetchFlags, d: FetchDeps): 
   const summaryPath = join(dir, "summary.md");
   // Text already exists: do not download or transcribe again (long ASR takes minutes).
   if (prev?.source && existsSync(transcriptPath) && !flags.force) {
-    return withWarnings(toResult(prev, dir, transcriptPath, summaryPath), d.warnings);
+    return toResult(prev, dir, transcriptPath, summaryPath);
   }
   const work = join(dir, ".work");
   await mkdir(work, { recursive: true });
@@ -247,11 +245,10 @@ export async function fetchCmd(input: string, flags: FetchFlags, d: FetchDeps): 
     thumbnail: item.thumbnail,
   };
   await writeMeta(dir, meta);
-  const result = withWarnings(toResult(meta, dir, transcriptPath, summaryPath), d.warnings);
+  const result = toResult(meta, dir, transcriptPath, summaryPath);
   return got.asrFailed?.length ? { ...result, asr_failed: got.asrFailed } : result;
 }
 
-const withWarnings = (r: FetchResult, warnings?: string[]): FetchResult => (warnings?.length ? { ...r, warnings } : r);
 
 function toResult(meta: Meta, dir: string, transcriptPath: string, summaryPath: string): FetchResult {
   return {

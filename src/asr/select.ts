@@ -4,7 +4,7 @@ import { LANGUAGES } from "../local/pins";
 import { SLOW_MINUTES } from "../local/speed";
 import { type Fetcher, type Platform, type Runner, UserError } from "../types";
 import { modelsReachable, transcribeOpenAI } from "./openai-compatible";
-import type { ResolvedProvider } from "./presets";
+import type { ResolvedProvider } from "./providers";
 import { type AsrOptions, type AsrResult, primaryLang } from "./types";
 import { transcribeWhisperx, whisperxHealthy } from "./whisperx";
 

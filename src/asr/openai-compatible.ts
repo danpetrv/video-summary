@@ -2,7 +2,7 @@ import { openAsBlob } from "node:fs";
 import { normalizeLanguage } from "./language";
 import { oneLine } from "../net";
 import { type Fetcher, UserError } from "../types";
-import type { RemoteProvider } from "./presets";
+import type { RemoteProvider } from "./providers";
 import { type AsrOptions, type AsrResult, authHeaders, joinUrl, postAsr, primaryLang } from "./types";
 
 type Segment = { start: number; end: number; text: string };

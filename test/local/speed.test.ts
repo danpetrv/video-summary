@@ -2,7 +2,7 @@ import { afterAll, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { resolveProvider } from "../../src/asr/presets";
+import { resolveProvider } from "../../src/asr/providers";
 import { localPaths } from "../../src/local/paths";
 import { diarSpeedKey, estimateLocal, readSpeeds, recordSpeed, speedKey } from "../../src/local/speed";
 

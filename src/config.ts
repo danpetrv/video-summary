@@ -30,9 +30,6 @@ export const DEFAULT_CONFIG: Config = {
 /** short | medium | long, or a target reading time of 1-60 minutes ("5m"). */
 const SUMMARY_LENGTH = /^(short|medium|long|([1-9]|[1-5]\d|60)m)$/;
 const TOP_KEYS = Object.keys(DEFAULT_CONFIG);
-/** Provider keys of the cloud era (v0.3): an old config still loads, these are dropped with a warning. */
-const REMOVED_PROVIDER_KEYS = ["tier", "maxBytes", "maxSeconds", "local"];
-const removed = (path: string) => `${path}: removed in v0.4.0 — ignored`;
 
 export function configPath(env: Record<string, string | undefined>, home: string): string {
   if (env.VIDEO_SUMMARY_CONFIG) return env.VIDEO_SUMMARY_CONFIG;
@@ -92,8 +89,8 @@ function providerName(raw: Record<string, unknown>, path: string, seen: Set<stri
 }
 
 const LOCAL_KEYS = ["name", "type", "engine", "model", "device", "diarize"];
-/** Keys of the other provider types, current and removed: named as such rather than as unknown. */
-const REMOTE_KEYS = ["url", "diarize", "keyFile", "keyEnv", "preset", ...REMOVED_PROVIDER_KEYS];
+/** Keys of the server provider types: named as such rather than as unknown. */
+const REMOTE_KEYS = ["url", "keyFile", "keyEnv"];
 
 /** Value of `o[k]` from `allowed`; absent -> the first (default) one. */
 function oneOf<T extends string>(o: Record<string, unknown>, k: string, allowed: readonly T[], path: string): T {
@@ -103,10 +100,7 @@ function oneOf<T extends string>(o: Record<string, unknown>, k: string, allowed:
   return v as T;
 }
 
-/**
- * The local type is new in v0.4.0: no old configs to migrate, so any other field is an error.
- * `diarize` (v0.5) turns speaker labels on or off; default on.
- */
+/** Any other field is an error. `diarize` turns speaker labels on or off; default on. */
 function parseLocal(raw: Record<string, unknown>, path: string, seen: Set<string>): LocalProviderConfig {
   for (const k of Object.keys(raw)) {
     if (!LOCAL_KEYS.includes(k)) fail(`${path}.${k}`, REMOTE_KEYS.includes(k) ? "not allowed for type local" : "unknown key");
@@ -120,29 +114,12 @@ function parseLocal(raw: Record<string, unknown>, path: string, seen: Set<string
   };
 }
 
-/** A v0.3-only setting on a remote provider (v0.4 configs have none): the config is being migrated. */
-const hasLegacyKeys = (raw: unknown): boolean =>
-  isObj(raw) && raw.type !== "local" && (
-    raw.preset !== undefined || REMOVED_PROVIDER_KEYS.some((k) => raw[k] !== undefined) ||
-    (raw.type === "openai-compatible" && raw.diarize !== undefined));
-
-/**
- * null = an old cloud preset provider, skipped with a warning. `fromV03`: the config is from v0.3,
- * where a provider not counted as local (openai-compatible by default) never got local files unasked.
- */
-function parseProvider(raw: unknown, i: number, seen: Set<string>, warnings: string[], fromV03 = false): ProviderConfig | null {
+function parseProvider(raw: unknown, i: number, seen: Set<string>): ProviderConfig {
   const path = `providers[${i}]`;
   if (!isObj(raw)) return fail(path, "must be an object");
   if (raw.type === "local") return parseLocal(raw, path, seen);
-  if (raw.preset !== undefined) {
-    const label = typeof raw.name === "string" && raw.name ? `${path} ${JSON.stringify(raw.name)}` : path;
-    warnings.push(`${label}: cloud providers were removed in v0.4.0 — skipped`);
-    return null;
-  }
-  // Speaker labels over openai-compatible existed only for the openai preset.
-  const legacy = raw.type === "openai-compatible" ? [...REMOVED_PROVIDER_KEYS, "diarize"] : REMOVED_PROVIDER_KEYS;
-  for (const k of legacy) if (raw[k] !== undefined) warnings.push(removed(`${path}.${k}`));
-  checkKeys(raw, ["name", "type", "url", "model", "diarize", "keyFile", "keyEnv", ...legacy], path);
+  // Speaker labels: whisperx only (an OpenAI-compatible server has no diarized format).
+  checkKeys(raw, ["name", "type", "url", "model", "keyFile", "keyEnv", ...(raw.type === "whisperx" ? ["diarize"] : [])], path);
   const name = providerName(raw, path, seen);
   if (raw.type !== "whisperx" && raw.type !== "openai-compatible") {
     return fail(`${path}.type`, `unknown type ${JSON.stringify(raw.type)} (whisperx, openai-compatible, local)`);
@@ -157,17 +134,13 @@ function parseProvider(raw: unknown, i: number, seen: Set<string>, warnings: str
     const diarize = optBool(raw, "diarize", path);
     if (diarize !== undefined) p.diarize = diarize;
   }
-  if (raw.local === false || (fromV03 && p.type === "openai-compatible" && raw.local !== true)) {
-    warnings.push(`${path} ${JSON.stringify(name)}: now treated as your own server — local files are sent to it without asking`);
-  }
   return p;
 }
 
-/** Settings removed in v0.4.0 are dropped, each with a line in `warnings`; anything else unknown is an error. */
-export function parseConfig(raw: unknown, warnings: string[] = []): Config {
+/** Strict: an unknown key or a bad value is an error naming the field. */
+export function parseConfig(raw: unknown): Config {
   if (!isObj(raw)) return fail("(root)", "must be an object");
-  if (raw.bitrate !== undefined) warnings.push(removed("bitrate"));
-  checkKeys(raw, [...TOP_KEYS, "bitrate"], "");
+  checkKeys(raw, TOP_KEYS, "");
   const cfg: Config = { ...DEFAULT_CONFIG, providers: [], readeck: null };
   if (raw.outputDir !== undefined) cfg.outputDir = str(raw.outputDir, "outputDir");
   if (raw.summaryLanguage !== undefined) cfg.summaryLanguage = str(raw.summaryLanguage, "summaryLanguage");
@@ -184,10 +157,7 @@ export function parseConfig(raw: unknown, warnings: string[] = []): Config {
   if (raw.providers !== undefined) {
     if (!Array.isArray(raw.providers)) return fail("providers", "must be an array");
     const seen = new Set<string>();
-    const fromV03 = raw.bitrate !== undefined || raw.providers.some(hasLegacyKeys);
-    cfg.providers = raw.providers
-      .map((p, i) => parseProvider(p, i, seen, warnings, fromV03))
-      .filter((p): p is ProviderConfig => p !== null);
+    cfg.providers = raw.providers.map((p, i) => parseProvider(p, i, seen));
   }
   if (raw.readeck !== undefined && raw.readeck !== null) {
     const r = raw.readeck;
@@ -203,7 +173,7 @@ export function parseConfig(raw: unknown, warnings: string[] = []): Config {
   return cfg;
 }
 
-export async function loadConfig(path: string, warnings?: string[]): Promise<Config | null> {
+export async function loadConfig(path: string): Promise<Config | null> {
   let text: string;
   try {
     text = await readFile(path, "utf8");
@@ -217,10 +187,10 @@ export async function loadConfig(path: string, warnings?: string[]): Promise<Con
   } catch (e) {
     throw new UserError(`config: ${path}: invalid JSON (${(e as Error).message})`);
   }
-  return parseConfig(raw, warnings);
+  return parseConfig(raw);
 }
 
-/** Writes the parsed config: after a migration this is the cleaned one. */
+/** Writes the parsed config (defaults filled in). */
 export async function saveConfig(path: string, cfg: Config): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, JSON.stringify(cfg, null, 2) + "\n");
@@ -241,14 +211,7 @@ export function setValue(cfg: Config, key: string, value: unknown): Config {
   } else {
     throw new UserError(`config: ${key}: unknown key`);
   }
-  // `cfg` is already clean, so any warning comes from the new value: refuse it rather than drop it silently.
-  const warnings: string[] = [];
-  const parsed = parseConfig(next, warnings);
-  if (warnings.length) {
-    const reasons = warnings.map((w) => w.replace(/ — (ignored|skipped)$/, ""));
-    throw new UserError(`config: ${key}: not saved: ${reasons.join("; ")}`);
-  }
-  return parsed;
+  return parseConfig(next);
 }
 
 export function keySource(ref: KeyRef): string | null {

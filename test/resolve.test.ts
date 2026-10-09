@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { resolveProvider } from "../src/asr/presets";
+import { resolveProvider } from "../src/asr/providers";
 
 test("resolveProvider: whisperx — diarize defaults to true, url trimmed, keys passed through", () => {
   expect(resolveProvider({ name: "w", type: "whisperx", url: "https://a/" })).toEqual({

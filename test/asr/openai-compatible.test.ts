@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { join } from "node:path";
 import * as oc from "../../src/asr/openai-compatible";
 import { modelsReachable, parseVerbose, transcribeOpenAI } from "../../src/asr/openai-compatible";
-import { resolveProvider } from "../../src/asr/presets";
+import { resolveProvider } from "../../src/asr/providers";
 import { type Fetcher, UserError } from "../../src/types";
 
 const fx = (n: string) => Bun.file(join(import.meta.dir, "../fixtures", n)).json();

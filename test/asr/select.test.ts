@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { resolveProvider, type ResolvedProvider } from "../../src/asr/presets";
+import { resolveProvider, type ResolvedProvider } from "../../src/asr/providers";
 import { type AsrDeps, type Candidate, chooseProvider, probeProviders, type SelectInput, transcribeWith } from "../../src/asr/select";
 import { localPaths } from "../../src/local/paths";
 import { DIAR_MODEL } from "../../src/local/pins";

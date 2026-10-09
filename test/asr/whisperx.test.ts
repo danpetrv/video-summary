@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
-import { resolveProvider } from "../../src/asr/presets";
+import { resolveProvider } from "../../src/asr/providers";
 import { parseWhisperx, transcribeWhisperx, whisperxHealthy } from "../../src/asr/whisperx";
 import { postAsr } from "../../src/asr/types";
 import { type Fetcher, UserError } from "../../src/types";

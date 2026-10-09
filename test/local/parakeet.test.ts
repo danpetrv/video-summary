@@ -2,7 +2,7 @@ import { afterAll, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveProvider } from "../../src/asr/presets";
+import { resolveProvider } from "../../src/asr/providers";
 import { LOCAL_TIMEOUT_MS, plannedDevice, transcribeParakeet, wordsToCues } from "../../src/local/parakeet";
 import { localPaths } from "../../src/local/paths";
 import { type BuildId, DIAR_MODEL } from "../../src/local/pins";
