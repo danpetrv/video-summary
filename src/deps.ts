@@ -129,13 +129,17 @@ export function buildReport(
 export const depsOk = (missing: DepsReport["missing"]): boolean => missing.every((m) => m.optional);
 
 /** Missing pieces of a configured local provider, from `localStatus`. libvulkan1 is advisory: the CPU build works without it. */
-export function localMissing(s: { installed: boolean; hint?: string; diarization?: { verified: boolean } }): DepsReport["missing"] {
+export function localMissing(
+  s: { installed: boolean; hint?: string; diarization?: { verified: boolean } },
+  diarize = true,
+): DepsReport["missing"] {
   const out: DepsReport["missing"] = [];
   if (!s.installed) {
-    out.push({ name: "parakeet", install: "sh <skill-dir>/scripts/video-summary local install", needsSudo: false, note: "~0.9 GB download" });
+    out.push({ name: "parakeet", install: "sh <skill-dir>/scripts/video-summary local install", needsSudo: false, note: "~1 GB download" });
   }
-  // Installed but without the diarization model (a v0.4 install): optional, speaker labels only.
-  if (s.installed && s.diarization && !s.diarization.verified) {
+  // Installed but without the diarization model (a v0.4 install): optional, speaker labels only,
+  // and only worth mentioning when some local provider has them on.
+  if (diarize && s.installed && s.diarization && !s.diarization.verified) {
     out.push({ name: "diarization-model", install: "sh <skill-dir>/scripts/video-summary local install", needsSudo: false, note: "~0.1 GB download; enables speaker labels", optional: true });
   }
   if (s.hint) {

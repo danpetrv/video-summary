@@ -45,7 +45,7 @@ async function check(d: CliDeps, path: string): Promise<unknown> {
   // The local engine is checked only when a local provider is configured.
   const local = resolved.some((p) => p.type === "local") ? localStatus(d) : undefined;
   if (local) {
-    depsReport.missing.push(...localMissing(local));
+    depsReport.missing.push(...localMissing(local, resolved.some((p) => p.type === "local" && p.diarize)));
     depsReport.ok = depsOk(depsReport.missing);
   }
   const providers = (await probeProviders(resolved, d.fetch, d.env, d.home, local)).map((c) => ({

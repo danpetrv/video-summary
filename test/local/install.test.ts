@@ -400,6 +400,22 @@ test("download: 4 failures in a row -> UserError \"could not download <file>: <t
   expect(readdirSync(modelsDir())).toEqual([]);
 });
 
+test("download: body ends cleanly short of the pinned size -> retried with Range, file verifies", async () => {
+  const { d, ranges } = modelFetch((attempt, range) => (attempt === 1 ? new Response(modelBytes.slice(0, N)) : ranged(range)));
+  await localInstall(d, fixturePins());
+  expect(ranges).toEqual([null, `bytes=${N}-`]);
+  expect(sha(readFileSync(paths().model))).toBe(sha(modelBytes));
+  expect(readdirSync(modelsDir()).sort()).toEqual(["nemotron-3-diarization-q8_0.gguf", "ultra-q8_0.gguf"]);
+});
+
+test("download: connection drops after the last byte -> no second request, file verifies", async () => {
+  const { d, ranges } = modelFetch((attempt, range) => (attempt === 1 ? dropsAfter(modelBytes) : ranged(range)));
+  await localInstall(d, fixturePins());
+  expect(ranges).toEqual([null]);
+  expect(sha(readFileSync(paths().model))).toBe(sha(modelBytes));
+  expect(readdirSync(modelsDir()).sort()).toEqual(["nemotron-3-diarization-q8_0.gguf", "ultra-q8_0.gguf"]);
+});
+
 test("download: HTTP 404 on a retry -> \"could not download <file>: HTTP 404\", no further requests", async () => {
   const { d, ranges } = modelFetch((attempt) =>
     attempt === 1 ? dropsAfter(modelBytes.slice(0, N)) : new Response("not found", { status: 404 }),

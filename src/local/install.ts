@@ -164,9 +164,10 @@ export const DOWNLOAD_RETRIES = 3;
 /**
  * Streams `url` into a unique `<target>.<random>.part` while hashing, checks size and sha256,
  * renames onto `target`. Waiting for headers and for each chunk is limited by the idle timeout.
- * A network failure is retried up to DOWNLOAD_RETRIES times with `Range: bytes=<received>-`:
- * `206` appends, `200` starts over. HTTP errors and a size overflow are final.
- * On any failure the .part is removed. Returns the bytes received.
+ * A network failure (including a body that ends short of the pinned size) is retried up to
+ * DOWNLOAD_RETRIES times with `Range: bytes=<received>-`: `206` appends, `200` starts over.
+ * A drop after the last byte is not retried. HTTP errors and a size overflow are final.
+ * On any failure the .part is removed. Returns the size of the downloaded file.
  */
 async function download(d: LocalDeps, url: string, target: string, pin: { size: number; sha256: string }, file: string): Promise<number> {
   const part = `${target}.${randomBytes(6).toString("hex")}.part`;
@@ -194,7 +195,11 @@ async function download(d: LocalDeps, url: string, target: string, pin: { size: 
           const reader = res.body?.getReader();
           for (;;) {
             const chunk = reader ? await net(() => idle(reader.read(), idleMs, ac)) : { done: true as const, value: undefined };
-            if (chunk.done) break;
+            if (chunk.done) {
+              // A clean end short of the pinned size is a dropped connection too: resume it.
+              if (bytes < pin.size) throw new NetDrop("TRUNCATED");
+              break;
+            }
             if (bytes + chunk.value.length > pin.size) {
               await reader!.cancel().catch(() => {});
               throw mismatch(file);
@@ -210,6 +215,8 @@ async function download(d: LocalDeps, url: string, target: string, pin: { size: 
         } catch (e) {
           if (!(e instanceof NetDrop)) throw e;
           ac.abort(e);
+          // Every byte arrived before the drop: a Range request would get a 416, let the size and sha256 check decide.
+          if (bytes === pin.size) break;
           if (attempt >= DOWNLOAD_RETRIES) throw new UserError(`could not download ${file}: ${e.tag}`);
         }
       }

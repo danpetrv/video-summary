@@ -74,7 +74,7 @@ test("check with valid config -> ok true, providers probed, readeck configured",
 });
 
 const PARAKEET = {
-  name: "parakeet", install: "sh <skill-dir>/scripts/video-summary local install", needsSudo: false, note: "~0.9 GB download",
+  name: "parakeet", install: "sh <skill-dir>/scripts/video-summary local install", needsSudo: false, note: "~1 GB download",
 };
 const LIBVULKAN = {
   name: "libvulkan1", install: "sudo apt install libvulkan1", needsSudo: true,
@@ -126,6 +126,15 @@ test("check: local installed without the diarization model -> optional diarizati
     note: "~0.1 GB download; enables speaker labels", optional: true,
   }]);
   expect(r.deps.ok).toBe(true);
+  expect(r.ok).toBe(true);
+});
+
+test("check: local provider with diarize false, no diarization model -> no diarization-model item", async () => {
+  writeFileSync(cfgFile, JSON.stringify({ providers: [{ name: "local", type: "local", diarize: false }] }));
+  const { env, exists, paths } = localEnv();
+  installLocal(paths, { diar: false });
+  const r = (await call(["check"], { env, exists })) as any;
+  expect(r.deps.missing).toEqual([]);
   expect(r.ok).toBe(true);
 });
 
