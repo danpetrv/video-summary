@@ -24,8 +24,6 @@ var DEFAULT_CONFIG = {
 };
 var SUMMARY_LENGTH = /^(short|medium|long|([1-9]|[1-5]\d|60)m)$/;
 var TOP_KEYS = Object.keys(DEFAULT_CONFIG);
-var REMOVED_PROVIDER_KEYS = ["tier", "maxBytes", "maxSeconds", "local"];
-var removed = (path) => `${path}: removed in v0.4.0 — ignored`;
 function configPath(env, home) {
   if (env.VIDEO_SUMMARY_CONFIG)
     return env.VIDEO_SUMMARY_CONFIG;
@@ -84,7 +82,7 @@ function providerName(raw, path, seen) {
   return name;
 }
 var LOCAL_KEYS = ["name", "type", "engine", "model", "device", "diarize"];
-var REMOTE_KEYS = ["url", "diarize", "keyFile", "keyEnv", "preset", ...REMOVED_PROVIDER_KEYS];
+var REMOTE_KEYS = ["url", "keyFile", "keyEnv"];
 function oneOf(o, k, allowed, path) {
   const v = o[k];
   if (v === undefined)
@@ -107,23 +105,13 @@ function parseLocal(raw, path, seen) {
     diarize: optBool(raw, "diarize", path) ?? true
   };
 }
-var hasLegacyKeys = (raw) => isObj(raw) && raw.type !== "local" && (raw.preset !== undefined || REMOVED_PROVIDER_KEYS.some((k) => raw[k] !== undefined) || raw.type === "openai-compatible" && raw.diarize !== undefined);
-function parseProvider(raw, i, seen, warnings, fromV03 = false) {
+function parseProvider(raw, i, seen) {
   const path = `providers[${i}]`;
   if (!isObj(raw))
     return fail(path, "must be an object");
   if (raw.type === "local")
     return parseLocal(raw, path, seen);
-  if (raw.preset !== undefined) {
-    const label = typeof raw.name === "string" && raw.name ? `${path} ${JSON.stringify(raw.name)}` : path;
-    warnings.push(`${label}: cloud providers were removed in v0.4.0 — skipped`);
-    return null;
-  }
-  const legacy = raw.type === "openai-compatible" ? [...REMOVED_PROVIDER_KEYS, "diarize"] : REMOVED_PROVIDER_KEYS;
-  for (const k of legacy)
-    if (raw[k] !== undefined)
-      warnings.push(removed(`${path}.${k}`));
-  checkKeys(raw, ["name", "type", "url", "model", "diarize", "keyFile", "keyEnv", ...legacy], path);
+  checkKeys(raw, ["name", "type", "url", "model", "keyFile", "keyEnv", ...raw.type === "whisperx" ? ["diarize"] : []], path);
   const name = providerName(raw, path, seen);
   if (raw.type !== "whisperx" && raw.type !== "openai-compatible") {
     return fail(`${path}.type`, `unknown type ${JSON.stringify(raw.type)} (whisperx, openai-compatible, local)`);
@@ -142,17 +130,12 @@ function parseProvider(raw, i, seen, warnings, fromV03 = false) {
     if (diarize !== undefined)
       p.diarize = diarize;
   }
-  if (raw.local === false || fromV03 && p.type === "openai-compatible" && raw.local !== true) {
-    warnings.push(`${path} ${JSON.stringify(name)}: now treated as your own server — local files are sent to it without asking`);
-  }
   return p;
 }
-function parseConfig(raw, warnings = []) {
+function parseConfig(raw) {
   if (!isObj(raw))
     return fail("(root)", "must be an object");
-  if (raw.bitrate !== undefined)
-    warnings.push(removed("bitrate"));
-  checkKeys(raw, [...TOP_KEYS, "bitrate"], "");
+  checkKeys(raw, TOP_KEYS, "");
   const cfg = { ...DEFAULT_CONFIG, providers: [], readeck: null };
   if (raw.outputDir !== undefined)
     cfg.outputDir = str(raw.outputDir, "outputDir");
@@ -173,8 +156,7 @@ function parseConfig(raw, warnings = []) {
     if (!Array.isArray(raw.providers))
       return fail("providers", "must be an array");
     const seen = new Set;
-    const fromV03 = raw.bitrate !== undefined || raw.providers.some(hasLegacyKeys);
-    cfg.providers = raw.providers.map((p, i) => parseProvider(p, i, seen, warnings, fromV03)).filter((p) => p !== null);
+    cfg.providers = raw.providers.map((p, i) => parseProvider(p, i, seen));
   }
   if (raw.readeck !== undefined && raw.readeck !== null) {
     const r = raw.readeck;
@@ -193,7 +175,7 @@ function parseConfig(raw, warnings = []) {
   }
   return cfg;
 }
-async function loadConfig(path, warnings) {
+async function loadConfig(path) {
   let text;
   try {
     text = await readFile(path, "utf8");
@@ -208,7 +190,7 @@ async function loadConfig(path, warnings) {
   } catch (e) {
     throw new UserError(`config: ${path}: invalid JSON (${e.message})`);
   }
-  return parseConfig(raw, warnings);
+  return parseConfig(raw);
 }
 async function saveConfig(path, cfg) {
   await mkdir(dirname(path), { recursive: true });
@@ -231,13 +213,7 @@ function setValue(cfg, key, value) {
   } else {
     throw new UserError(`config: ${key}: unknown key`);
   }
-  const warnings = [];
-  const parsed = parseConfig(next, warnings);
-  if (warnings.length) {
-    const reasons = warnings.map((w) => w.replace(/ — (ignored|skipped)$/, ""));
-    throw new UserError(`config: ${key}: not saved: ${reasons.join("; ")}`);
-  }
-  return parsed;
+  return parseConfig(next);
 }
 function keySource(ref) {
   const parts = [ref.keyFile && `file ${ref.keyFile}`, ref.keyEnv && `env ${ref.keyEnv}`].filter(Boolean);
@@ -384,7 +360,7 @@ import { existsSync } from "node:fs";
 import { mkdir as mkdir5, readdir as readdir4, readFile as readFile5, rm as rm5, writeFile as writeFile4 } from "node:fs/promises";
 import { basename as basename3, extname as extname2, join as join7 } from "node:path";
 
-// src/asr/presets.ts
+// src/asr/providers.ts
 function resolveProvider(p) {
   if (p.type === "local") {
     return {
@@ -1885,7 +1861,7 @@ async function fetchCmd(input, flags, d) {
   const transcriptPath = join7(dir, "transcript.md");
   const summaryPath = join7(dir, "summary.md");
   if (prev?.source && existsSync(transcriptPath) && !flags.force) {
-    return withWarnings(toResult(prev, dir, transcriptPath, summaryPath), d.warnings);
+    return toResult(prev, dir, transcriptPath, summaryPath);
   }
   const work = join7(dir, ".work");
   await mkdir5(work, { recursive: true });
@@ -1914,10 +1890,9 @@ async function fetchCmd(input, flags, d) {
     thumbnail: item.thumbnail
   };
   await writeMeta(dir, meta);
-  const result = withWarnings(toResult(meta, dir, transcriptPath, summaryPath), d.warnings);
+  const result = toResult(meta, dir, transcriptPath, summaryPath);
   return got.asrFailed?.length ? { ...result, asr_failed: got.asrFailed } : result;
 }
-var withWarnings = (r, warnings) => warnings?.length ? { ...r, warnings } : r;
 function toResult(meta, dir, transcriptPath, summaryPath) {
   return {
     dir,
@@ -3605,18 +3580,18 @@ async function finalizeSummary(dir) {
 // src/cli.ts
 var USAGE = "usage: video-summary check | config path|get [key]|init [--force]|set <key> <json> | " + "fetch <url|path> [--no-diarize] [--force] [--accept-slow] | finalize <dir> | readeck <dir> | local install|status";
 var NO_CONFIG = "no config — run setup (see references/setup.md)";
-async function requireConfig(path, warnings) {
-  const cfg = await loadConfig(path, warnings);
+async function requireConfig(path) {
+  const cfg = await loadConfig(path);
   if (!cfg)
     throw new UserError(NO_CONFIG);
   return cfg;
 }
 async function check(d, path) {
   const depsReport = buildReport(await probeDeps(d.run), d.platform, d.runtime, d.now, d.has);
-  const config = { path, exists: false, valid: false, warnings: [] };
+  const config = { path, exists: false, valid: false };
   let cfg = null;
   try {
-    cfg = await loadConfig(path, config.warnings);
+    cfg = await loadConfig(path);
     config.exists = cfg !== null;
     config.valid = cfg !== null;
   } catch (e) {
@@ -3702,8 +3677,7 @@ async function main(argv, d) {
       const src = rest.find((a) => !a.startsWith("--"));
       if (!src)
         throw new UserError(USAGE);
-      const warnings = [];
-      const cfg = await requireConfig(path, warnings);
+      const cfg = await requireConfig(path);
       const flags = {
         diarize: !rest.includes("--no-diarize"),
         force: rest.includes("--force"),
@@ -3720,8 +3694,7 @@ async function main(argv, d) {
         platform: d.platform,
         arch: d.arch,
         exists: d.exists,
-        has: d.has,
-        warnings
+        has: d.has
       });
     }
     case "finalize": {
