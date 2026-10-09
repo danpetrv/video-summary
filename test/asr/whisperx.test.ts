@@ -17,6 +17,18 @@ test("parseWhisperx: SPEAKER_xx -> Speaker N by first appearance; no speaker -> 
   expect([r.diarized, r.speakers, r.language, r.provider]).toEqual([true, 2, "ru", "wx"]);
 });
 
+test("parseWhisperx: a single speaker -> cues without speaker, diarized true, speakers 1", () => {
+  const segs = [
+    { start: 0, end: 1.5, text: " Всем привет. ", speaker: "SPEAKER_07" },
+    { start: 1.5, end: 2.5, text: "Это стрим." },
+    { start: 2.5, end: 4, text: "Пока!", speaker: "SPEAKER_07" },
+  ];
+  const r = parseWhisperx({ language: "ru", segments: segs }, "wx");
+  expect([r.diarized, r.speakers]).toEqual([true, 1]);
+  expect(r.cues.map((c) => c.text)).toEqual(["Всем привет.", "Это стрим.", "Пока!"]);
+  for (const cue of r.cues) expect("speaker" in cue).toBe(false);
+});
+
 test("parseWhisperx: diarization softly failed -> diarized:false, speakers:0", () => {
   const segs = fixture.segments.map(({ speaker, ...s }: { speaker?: string }) => s);
   const r = parseWhisperx({ ...fixture, segments: segs }, "wx");

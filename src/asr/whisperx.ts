@@ -20,12 +20,14 @@ export async function whisperxHealthy(url: string, f: Fetcher, key: string | nul
 export function parseWhisperx(json: unknown, provider: string): AsrResult {
   const body = json as { language?: string; segments?: Segment[] };
   const names = new Map<string, string>();
-  const cues = (body.segments ?? []).map((s) => {
+  const labeled: { start: number; end: number; text: string; speaker?: string }[] = (body.segments ?? []).map((s) => {
     const cue = { start: s.start, end: s.end, text: s.text.trim() };
     if (!s.speaker) return cue;
     if (!names.has(s.speaker)) names.set(s.speaker, `Speaker ${names.size + 1}`);
     return { ...cue, speaker: names.get(s.speaker)! };
   });
+  // One speaker carries no labels: "Speaker 1" on every cue adds nothing.
+  const cues = labeled.map((c) => (names.size === 1 ? { start: c.start, end: c.end, text: c.text } : c));
   return { cues, provider, diarized: names.size > 0, speakers: names.size, language: normalizeLanguage(body.language) };
 }
 
