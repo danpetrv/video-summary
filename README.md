@@ -17,8 +17,8 @@ npx skills add danpetrv/video-summary
 Then ask your agent: `/video-summary https://youtu.be/...`. On the first run the agent
 walks you through the setup (output folder, speech recognition, language, summary size,
 Readeck). For speech recognition it recommends the local engine: with your consent it
-downloads it once (about 0.9 GB: the Parakeet Ultra model and parakeet.cpp binaries). No
-account and no API key are needed.
+downloads it once (about 1 GB: the Parakeet Ultra model, the speaker-labeling model and
+parakeet.cpp binaries). No account and no API key are needed.
 
 The summary size is an optional argument: `short` (TL;DR and key ideas), `medium` (the
 full template, default), `long` (in depth) or a target reading time such as `5m`
@@ -46,7 +46,7 @@ network, the local engine crashing), the next suitable one is tried.
 
 | provider | notes |
 |---|---|
-| `local` (recommended) | Parakeet Ultra via [parakeet.cpp](https://github.com/mudler/parakeet.cpp) on this machine: no server, no key; GPU (Metal on Apple Silicon, Vulkan on Linux) or CPU; 25 European languages; no speaker labels |
+| `local` (recommended) | Parakeet Ultra via [parakeet.cpp](https://github.com/mudler/parakeet.cpp) on this machine: no server, no key; GPU (Metal on Apple Silicon, Vulkan on Linux) or CPU; 25 European languages; speaker labels (up to 8 speakers) |
 | `whisperx` | your own [whisperx-asr-service](https://github.com/murtaza-nasir/whisperx-asr-service) server, speaker labels |
 | `openai-compatible` | your own OpenAI-compatible server (speaches, faster-whisper-server, ...) via `url` + `model` |
 
@@ -56,6 +56,12 @@ provider in the list. Speed depends on the hardware: a desktop GPU recognizes an
 audio in under a minute, a CPU takes several minutes or more. When a run would take more
 than 10 minutes, the agent tells you the estimate (based on the speed measured on your
 machine) and waits for your go.
+
+The local engine labels speakers by default with a second pass over the audio (a small
+extra model, about 0.1 GB, downloaded by `local install`). A video with one speaker gets no
+labels. To skip the labels, use `fetch --no-diarize` or `"diarize": false` on the local
+provider; it also makes a CPU run faster. If the labeling fails, you get the transcript
+without labels and a note why. Upgrading from v0.4 downloads only the extra model.
 
 Cloud providers (the Groq and OpenAI presets) were removed in v0.4.0. An old config keeps
 working: cloud providers and removed settings (`bitrate`, `tier`, ...) are skipped with a
@@ -96,7 +102,7 @@ video thumbnail as its picture; for a local file, the first non-black frame of t
 minute (or the cover art of an audio file) is shown in the text instead.
 
 The local engine keeps its files in `${XDG_DATA_HOME:-~/.local/share}/video-summary/`
-(binaries), `${XDG_CACHE_HOME:-~/.cache}/video-summary/models/` (the model) and
+(binaries), `${XDG_CACHE_HOME:-~/.cache}/video-summary/models/` (the models) and
 `${XDG_STATE_HOME:-~/.local/state}/video-summary/speed.json` (measured speed).
 
 ## Development
@@ -139,3 +145,8 @@ The local engine is downloaded on first use, not shipped with the skill:
 - Model [Parakeet Ultra](https://huggingface.co/moondream/parakeet-ultra) (GGUF
   conversion from [mudler/parakeet-cpp-gguf](https://huggingface.co/mudler/parakeet-cpp-gguf)):
   CC-BY-4.0. Attribution: NVIDIA (Parakeet TDT 0.6B v3), fine-tuned by Moondream.
+- Model [Nemotron-3-Diarization](https://huggingface.co/nvidia/Nemotron-3-Diarization) by
+  NVIDIA (GGUF conversion from
+  [mudler/parakeet-cpp-gguf](https://huggingface.co/mudler/parakeet-cpp-gguf)):
+  [OpenMDW 1.1](https://openmdw.ai/license/1-1/). Downloaded by `local install`, not shipped
+  in this repository.

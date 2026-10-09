@@ -17,10 +17,12 @@ Launcher: `sh <skill-dir>/scripts/video-summary`. Config file: `config path`.
    order:
    1. **Recommended: local recognition** on this machine. Tell the user: no keys and no
       server, the audio never leaves the machine; it needs a one-time download of about
-      0.9 GB (the Parakeet Ultra model plus small parakeet.cpp binaries); it knows 25
-      European languages (including English, Russian and Ukrainian; list in
-      `providers.md`) and gives no speaker labels; it runs on the GPU (Metal on Apple
-      Silicon, Vulkan on Linux) or on the CPU, where a long video takes a while. On "yes"
+      1 GB (the Parakeet Ultra model ~0.9 GB, the speaker-labeling model ~0.1 GB and small
+      parakeet.cpp binaries); it knows 25 European languages (including English, Russian
+      and Ukrainian; list in `providers.md`) and labels speakers (up to 8; a video with
+      one speaker gets no labels; `fetch --no-diarize` skips the labels); it runs on the
+      GPU (Metal on Apple Silicon, Vulkan on Linux) or on the CPU, where a long video
+      takes a while and the speaker labels add to it. On "yes"
       run `local install` (in the background: on a slow connection the download can
       outlast the 10-minute Bash limit; a re-run skips what is already in place), then,
       with no other providers, `config set providers '[{"name":"local","type":"local"}]'`.
@@ -32,7 +34,8 @@ Launcher: `sh <skill-dir>/scripts/video-summary`. Config file: `config path`.
       `! sudo apt install libvulkan1`, then run `local install` again (it adds the Vulkan
       build). This is optional; if the user declines, recognition stays on the CPU.
    2. **Own server**, only if the user brings it up: a whisperx-asr-service instance
-      (`type: whisperx`: `name`, `url`, optional key; gives speaker labels) or an
+      (`type: whisperx`: `name`, `url`, optional key; also gives speaker labels, for those
+      who already have a server) or an
       OpenAI-compatible server such as speaches or faster-whisper-server
       (`type: openai-compatible`: `name`, `url` ending in `/v1`, `model`, optional key).
       It can go before or after the local provider: with the server first, local
@@ -78,7 +81,7 @@ sh <skill-dir>/scripts/video-summary config set outputDir '"~/Documents/video-su
 sh <skill-dir>/scripts/video-summary config set summaryLanguage '"auto"'
 sh <skill-dir>/scripts/video-summary config set summaryLength '"medium"'
 sh <skill-dir>/scripts/video-summary config set subtitles '"manual"'
-sh <skill-dir>/scripts/video-summary local install        # ~0.9 GB, once
+sh <skill-dir>/scripts/video-summary local install        # ~1 GB, once
 sh <skill-dir>/scripts/video-summary config set providers '[{"name":"local","type":"local"}]'   # no other providers
 # providers already configured: keep them in order and append local, e.g. after `config get providers`
 # returned [{"name":"home-whisperx","type":"whisperx","url":"https://asr.example"}]:

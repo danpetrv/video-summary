@@ -190,7 +190,7 @@ local не установлен — пункта нет (его закроет �
 - **Один спикер**: cues без `speaker` (транскрипт как без диаризации), `diarized: true`,
   `speakers: 1` — проверка была, найден один.
 - Слова без спикера (сегментов нет) — `diarized: false`, `speakers: 0`, note
-  `speaker labels skipped: no speech segments found`.
+  `<provider>: speaker labels skipped — no speech segments found`.
 
 ### Ошибки диаризации — не фатальны
 

@@ -34,15 +34,20 @@ Rules that always apply:
   After "yes" run those with `needsSudo: false` yourself; for `needsSudo: true` give
   `! <command>` to the user and wait. Then `check` again.
 - `parakeet` in `deps.missing` (a local provider is configured, the engine is not
-  installed): its `install` is `local install`, a download of about 0.9 GB (the model plus
-  small binaries). Name the size in your question; after "yes" run it yourself
-  (`needsSudo: false`) in the background, since on a slow connection it can outlast the
-  10-minute Bash limit. It is safe to re-run: what is already in place is not downloaded
-  again. Then `check` again.
-- An item with `optional: true` (`libvulkan1`: an NVIDIA GPU on Linux without the Vulkan
-  loader) does not make `ok` false. Offer it once: with it local recognition runs on the
-  GPU instead of the CPU. If the user agrees, give `! sudo apt install libvulkan1`, then
-  run `local install` again. If they decline, do not insist and do not offer it again.
+  installed): its `install` is `local install`, a download of about 1 GB (the recognition
+  model ~0.9 GB, the speaker-labeling model ~0.1 GB and small binaries). Name the size in
+  your question; after "yes" run it yourself (`needsSudo: false`) in the background, since
+  on a slow connection it can outlast the 10-minute Bash limit. It is safe to re-run: what
+  is already in place is not downloaded again. Then `check` again.
+- An item with `optional: true` does not make `ok` false. Offer it once; if the user
+  declines, do not insist and do not offer it again.
+  - `diarization-model` (the local engine is installed, its ~0.1 GB speaker-labeling model
+    is not, e.g. after an upgrade from v0.4): without it local recognition gives no speaker
+    labels. Name the size; on "yes" run its `install` (`local install`) yourself, it
+    downloads only the missing model.
+  - `libvulkan1` (an NVIDIA GPU on Linux without the Vulkan loader): with it local
+    recognition runs on the GPU instead of the CPU. If the user agrees, give
+    `! sudo apt install libvulkan1`, then run `local install` again.
 - `deps.stale` (old yt-dlp): offer the `upgrade` command (same `needsSudo` rule), do not block.
 - An item in `deps.missing` or `deps.stale` may carry a `note` (e.g. `pipx ensurepath`): show it with the command.
 - `config.warnings` not empty: the config has settings removed in v0.4.0 (cloud providers
@@ -82,8 +87,10 @@ hour or more). Never abort it and never start a second `fetch` for the same vide
 one is running, also not after a Bash timeout: recognition is already running (on the
 server or in the local engine).
 
-- `--no-diarize`: only if the user said one person speaks. Speaker labels come only from
-  a whisperx server; the local provider never labels speakers.
+- `--no-diarize`: skip speaker labels. Use it if the user said one person speaks, or to
+  make a local CPU run faster (the labeling is a second pass over the audio). Both the
+  local provider and a whisperx server label speakers by default (local: up to 8; a single
+  speaker gets no labels).
 - `--accept-slow`: only after the user agreed to wait the time the error named (see below).
 - `--force`: download and recognize again. Without it a repeated `fetch` returns the
   existing result at once.
@@ -91,9 +98,16 @@ server or in the local engine).
 Result: `dir`, `transcript_path`, `summary_path`, `summary_exists`, `source`
 (`youtube-manual-subs`, `manual-subs`, `youtube-auto-subs`, `sidecar-subs`, `asr`),
 `asr_provider`, `diarized`, `speakers`, `language`, `duration`, `transcript_tokens`, `url`,
-and `asr_failed` when a provider failed and the next one recognized the audio: tell the user
-which provider failed and why. A note like `local: GPU run failed (...), used CPU` means
-the text is there but recognition ran on the CPU: tell the user in one sentence.
+`warnings` when the config has migration warnings (relay them to the user as in step 1),
+and `asr_failed` when a provider failed and the next one recognized the audio, or left a
+note: tell the user which provider failed and why. A note like
+`local: GPU run failed (...), used CPU` means the text is there but recognition ran on the
+CPU: tell the user in one sentence. Notes `<provider>: no GPU device found, ran on CPU — ...`
+and `<provider>: GPU diarization failed (...), used CPU` get the same one sentence (for the
+first, mention the `"device": "cpu"` setting it names). A note
+`<provider>: speaker labels skipped — <reason>` means the transcript is there without
+speaker labels (`diarized: false`): say so in one sentence with the reason (e.g. run
+`local install` if the model is not installed).
 
 If the error says no provider fits, relay each reason as is (translated) and offer what
 fits it:
@@ -102,7 +116,12 @@ fits it:
   would take that long. Tell the user the time and ask whether to wait; on "yes" run the
   same `fetch` with `--accept-slow` in the background. The estimate is usually made before
   any download, so little was lost.
-- ``local engine not installed — run `local install` ``: offer `local install` (about 0.9 GB),
+- `~<N> min on <CPU|GPU> with speaker labels (~<M> without); add --accept-slow to wait, or --no-diarize to skip speaker labels`:
+  give both numbers and ask whether to wait or to skip the labels. On "wait" run the same
+  `fetch` with `--accept-slow` in the background; on "skip" run it with `--no-diarize`
+  (`--accept-slow` too if the user still wants a long wait). If the text has no
+  `--no-diarize` part, skipping the labels is still over 10 minutes: only waiting is left.
+- ``local engine not installed — run `local install` ``: offer `local install` (about 1 GB),
   as in step 1.
 - `language <code> not supported`: the local engine knows 25 European languages (see
   `references/providers.md`). Another provider in the list (an own server) may do it; for

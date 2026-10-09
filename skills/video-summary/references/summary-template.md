@@ -10,7 +10,7 @@ Section headings are translated into that language too; keep the emoji.
 > 📺 <channel> · 📅 <publication date> · ⏱️ <duration> · 🔗 [watch](<url>)
 > 📖 ~{{reading_time}} <"min read" in the summary language>
 > 📝 Text source: <see rules below>
-> 🗣️ Participants: <names or "Speaker 1", "Speaker 2">   (only if diarized)
+> 🗣️ Participants: <names or "Speaker 1", "Speaker 2">   (only if speakers >= 2)
 
 ## ⚡ TL;DR
 3-5 points: the main thing, why it is (or is not) worth watching.
@@ -49,9 +49,10 @@ Rules:
   - `source` is `youtube-manual-subs`, `manual-subs` or `sidecar-subs`: manual subtitles;
   - `youtube-auto-subs`: auto captions (may contain errors);
   - `asr`: recognition, naming the provider from `asr_provider`, plus whether
-    speakers are labeled (`diarized`), e.g. "recognition (local, no speaker labels)".
+    speakers are labeled (`speakers` >= 2), e.g. "recognition (local, no speaker labels)".
   Write the line in the summary language.
-- "Participants" line only when `diarized: true`.
+- "Participants" line only when `speakers` in `meta.json` is 2 or more (with one speaker
+  the transcript has no labels, so there is nothing to list).
 - Timecode links only for YouTube: `<meta.url>&t=<seconds>s` (`meta.url` is always
   `watch?v=...`). For other sites and local files timecodes are plain text, no links.
   Publication date from `upload_date` (`YYYYMMDD`), duration from `duration`.
@@ -59,9 +60,9 @@ Rules:
   invent a spelling where unsure.
 - Transcript labels are `Speaker N`; write them in the summary language ("Спикер N",
   "Speaker N", ...). Replace a label with a name only if the text supports it
-  (introductions, being addressed by name); otherwise keep the label. With diarization
-  say who claimed what ("Ivan thinks..., Speaker 2 objects..."). Without diarization
-  (subtitles, non-diarized ASR) attribute only where the text makes it explicit.
+  (introductions, being addressed by name); otherwise keep the label. With speaker labels
+  say who claimed what ("Ivan thinks..., Speaker 2 objects..."). Without speaker labels
+  (subtitles, ASR with no labels) attribute only where the text makes it explicit.
 - Quotes, Mentioned and Diagram sections only when there is something to put in them.
   Mermaid only for a process, structure or comparison.
 - Do not retell linearly: group by topic, drop filler and repetition.

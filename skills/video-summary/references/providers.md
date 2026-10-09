@@ -9,7 +9,7 @@ local engine crashing), the next one that fits is tried. `fetch` lists the faile
 
 | type | where | speaker labels | key |
 |---|---|---|---|
-| `local` | this machine, Parakeet Ultra via parakeet.cpp | no | none |
+| `local` | this machine, Parakeet Ultra via parakeet.cpp | yes (up to 8) | none |
 | `whisperx` | own whisperx-asr-service | yes | optional |
 | `openai-compatible` | own OpenAI-compatible server | no | optional |
 
@@ -28,17 +28,24 @@ or `"local": false`) now gets local files without asking; its warning says
 ```
 
 Optional fields: `"device": "cpu"` forces the CPU even when a GPU build is installed
-(default `"auto"`); `engine` (`"parakeet"`) and `model` (`"ultra"`) have one value each.
+(default `"auto"`); `"diarize": false` turns speaker labels off (default `true`); `engine`
+(`"parakeet"`) and `model` (`"ultra"`) have one value each.
 
-- **Install:** `local install` downloads pinned parakeet.cpp binaries and the Parakeet
-  Ultra model (~0.9 GB), checks their sha256 and is safe to re-run. `local status` reports
-  what is installed (no network). `check` lists `parakeet` in `deps.missing` until it is
-  installed.
+- **Install:** `local install` downloads pinned parakeet.cpp binaries, the Parakeet
+  Ultra model (~0.9 GB) and the speaker-labeling model Nemotron-3-Diarization (~0.1 GB),
+  checks their sha256 and is safe to re-run; a dropped connection is resumed up to 3
+  times. Its result has `model` and `diar_model` (`{path, bytes}`). `local status` reports
+  what is installed (no network), with `diarization: {present, verified, path}` for the
+  speaker-labeling model. `check` lists `parakeet` in `deps.missing` until the engine is
+  installed. The speaker-labeling model is optional: when the engine is installed without
+  it, `check` lists an optional `diarization-model` item (`local install`, ~0.1 GB) and
+  local works, just without speaker labels (upgrading from v0.4 downloads only this
+  model).
 - **Device:** Apple Silicon uses Metal; Linux uses Vulkan when `libvulkan.so.1` is present
   (`libvulkan1` package; `check` suggests it when `nvidia-smi` exists) and a GPU device is
   available, otherwise the CPU; Intel Macs use the CPU. With the library but no usable GPU
   device the Vulkan build runs on the CPU by itself and `asr_failed` carries
-  `local: no GPU device found, ran on CPU`. If the GPU run fails (other than by timing out),
+  `local: no GPU device found, ran on CPU — set "device": "cpu" for local to skip the GPU attempt`. If the GPU run fails (other than by timing out),
   the same audio is recognized on the CPU and `asr_failed` carries a note such as
   `local: GPU run failed (...), used CPU`.
 - **Languages:** 25 European languages: bg, hr, cs, da, nl, en, et, fi, fr, de, el, hu,
@@ -48,13 +55,25 @@ Optional fields: `"device": "cpu"` forces the CPU even when a GPU build is insta
 - **Slow runs:** before downloading (when the length is known), the run time is estimated from the video length and
   the speed measured on this machine (stored in
   `${XDG_STATE_HOME:-~/.local/state}/video-summary/speed.json`; until the first run:
-  8x real time on CPU, 60x on GPU). Over 10 minutes the provider is skipped with
-  `~<N> min on CPU|GPU (measured speed <S>x); add --accept-slow to wait`; `fetch
-  --accept-slow` runs it anyway. One run is stopped after 2 hours.
-- No speaker labels: `diarized` is `false`.
+  8x real time on CPU, 60x on GPU for recognition, 16x and 100x for speaker labels). The
+  estimate includes the speaker-label pass when it will run. Over 10 minutes the provider
+  is skipped with `~<N> min on CPU|GPU (measured speed <S>x); add --accept-slow to wait`;
+  `fetch --accept-slow` runs it anyway. When the speaker labels are what tips it over, the
+  text is `~<N> min on <CPU|GPU> with speaker labels (~<M> without); add --accept-slow to
+  wait, or --no-diarize to skip speaker labels` (no `--no-diarize` part when it is over
+  10 minutes without labels too). One run is stopped after 2 hours.
+- **Speaker labels:** a second pass over the audio (`scene --diar`), on by default, up to
+  8 speakers, named `Speaker N` in order of appearance. `fetch --no-diarize` or
+  `"diarize": false` skips it. One speaker found: no labels in the transcript, `diarized`
+  is `true`, `speakers` is `1` (the same for whisperx). The pass runs on the same device
+  as recognition. If it fails, the transcript is kept without labels (`diarized: false`)
+  and `asr_failed` carries `local: speaker labels skipped — <reason>` (model not
+  installed, diarization failed, timed out, unexpected output, no speech segments found).
+  If only the GPU pass failed, the CPU repeats it and the note is
+  `local: GPU diarization failed (...), used CPU`.
 
 Files: binaries in `${XDG_DATA_HOME:-~/.local/share}/video-summary/parakeet/`, the
-model in `${XDG_CACHE_HOME:-~/.cache}/video-summary/models/`.
+models in `${XDG_CACHE_HOME:-~/.cache}/video-summary/models/`.
 
 ## whisperx
 
@@ -65,7 +84,7 @@ model in `${XDG_CACHE_HOME:-~/.cache}/video-summary/models/`.
 `url` of a [whisperx-asr-service](https://github.com/murtaza-nasir/whisperx-asr-service)
 instance. The CLI calls `POST {url}/asr` and checks `GET {url}/health`. Speaker labels
 are on by default (`"diarize": false` in the config or `fetch --no-diarize` turns them
-off) and come out as `Speaker N`. Optional key (`keyFile`/`keyEnv`) sent as
+off) and come out as `Speaker N`; a single speaker gets no labels. Optional key (`keyFile`/`keyEnv`) sent as
 `Authorization: Bearer`.
 
 ## Your own OpenAI-compatible server
