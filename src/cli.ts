@@ -1,7 +1,7 @@
 import { stat } from "node:fs/promises";
 import { type Config, DEFAULT_CONFIG, configPath, loadConfig, saveConfig, setValue } from "./config";
 import { type DepsReport, buildReport, depsOk, localMissing, probeDeps } from "./deps";
-import { fetchCmd } from "./fetch-cmd";
+import { type FetchFlags, fetchCmd } from "./fetch-cmd";
 import { localInstall, localStatus } from "./local/install";
 import { resolveInputPath } from "./paths";
 import { resolveProvider } from "./asr/providers";
@@ -18,7 +18,7 @@ export type CliDeps = {
 
 const USAGE =
   "usage: video-summary check | config path|get [key]|init [--force]|set <key> <json> | " +
-  "fetch <url|path> [--no-diarize] [--force] [--accept-slow] | finalize <dir> | readeck <dir> | local install|status";
+  "fetch <url|path> [--no-diarize] [--force] [--accept-slow] [--provider <name>] | finalize <dir> | readeck <dir> | local install|status";
 const NO_CONFIG = "no config — run setup (see references/setup.md)";
 
 async function requireConfig(path: string): Promise<Config> {
@@ -110,11 +110,16 @@ export async function main(argv: string[], d: CliDeps): Promise<unknown> {
     case "config":
       return configCmd(rest, d, path);
     case "fetch": {
-      const src = rest.find((a) => !a.startsWith("--"));
+      // `--provider <name>` takes the next argument as its value, so it is not the source.
+      const at = rest.indexOf("--provider");
+      const provider = at >= 0 ? rest[at + 1] : undefined;
+      if (at >= 0 && (!provider || provider.startsWith("--"))) throw new UserError(USAGE);
+      const src = rest.find((a, i) => !a.startsWith("--") && (at < 0 || i !== at + 1));
       if (!src) throw new UserError(USAGE);
       const cfg = await requireConfig(path);
-      const flags = {
+      const flags: FetchFlags = {
         diarize: !rest.includes("--no-diarize"), force: rest.includes("--force"), acceptSlow: rest.includes("--accept-slow"),
+        ...(provider ? { provider } : {}),
       };
       return fetchCmd(src, flags, {
         run: d.run, fetch: d.fetch, cfg, env: d.env, now: d.now, cwd: d.cwd, home: d.home,

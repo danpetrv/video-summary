@@ -627,3 +627,45 @@ test("#3: auto captions fail and no ASR provider → one error naming both reaso
   expect(err.message).toContain("HTTP Error 429");
   expect(err.message).toContain("no ASR providers configured");
 });
+
+test("--provider: recognition only by the named provider, though an earlier one is available", async () => {
+  const r = await fetchCmd(URL1, { ...flags, provider: "own" }, deps({ meta: noMeta }));
+  expect([r.source, r.asr_provider]).toEqual(["asr", "own"]);
+  expect(calls.urls.some((u) => u.includes("/asr?"))).toBe(false);
+});
+
+test("--provider not in the config -> UserError listing the configured names, nothing run", async () => {
+  const err = await fetchCmd(URL1, { ...flags, provider: "nope" }, deps({ meta: noMeta })).catch((e) => e);
+  expect(err).toBeInstanceOf(UserError);
+  expect(err.message).toBe('unknown provider "nope" (configured: wx, own)');
+  expect(calls.cmds).toEqual([]);
+  const none = await fetchCmd(URL1, { ...flags, provider: "local" }, deps({ providers: [] })).catch((e) => e);
+  expect(none.message).toBe('unknown provider "local" (configured: none)');
+});
+
+test("--provider is strict: when it fails or does not fit, no other provider is tried", async () => {
+  const failed = await fetchCmd(URL1, { ...flags, provider: "own" }, deps({ meta: noMeta, ownStatus: 500 })).catch((e) => e);
+  expect(failed).toBeInstanceOf(UserError);
+  expect(failed.message).toStartWith("speech recognition failed: own responded 500");
+  expect(calls.urls.some((u) => u.includes("/asr?"))).toBe(false);
+  const unfit = await fetchCmd(URL1, { ...flags, provider: "own", force: true }, deps({ meta: noMeta, modelsStatus: 404 }))
+    .catch((e) => e);
+  expect(unfit.message).toBe("no ASR provider fits: own: not reachable");
+});
+
+test("--provider re-recognizes a transcript made by another provider; one made by it is returned as is", async () => {
+  const first = await fetchCmd(URL1, flags, deps({ meta: noMeta }));
+  expect(first.asr_provider).toBe("wx");
+  const second = await fetchCmd(URL1, { ...flags, provider: "own" }, deps({ meta: noMeta }));
+  expect([second.dir, second.asr_provider]).toEqual([first.dir, "own"]);
+  calls.urls = [];
+  const third = await fetchCmd(URL1, { ...flags, provider: "own" }, deps({ meta: noMeta }));
+  expect(third.asr_provider).toBe("own");
+  expect(calls.urls).toEqual([]);
+});
+
+test("--provider does not override manual subtitles", async () => {
+  const r = await fetchCmd(URL1, { ...flags, provider: "own" }, deps());
+  expect([r.source, r.asr_provider]).toEqual(["youtube-manual-subs", null]);
+  expect(calls.urls).toEqual([]);
+});

@@ -176,6 +176,15 @@ test("config path / get / set", async () => {
   await expect(call(["config", "get", "nope"])).rejects.toBeInstanceOf(UserError);
 });
 
+test("fetch --provider <name>: the value is not taken as the source; a missing value is a usage error", async () => {
+  await call(["config", "init"]);
+  const err = (await call(["fetch", "--provider", "nope", "https://x.example/v"]).catch((e) => e)) as Error;
+  expect(err.message).toBe('unknown provider "nope" (configured: none)');
+  const usage = (await call(["fetch", "https://x.example/v", "--provider"]).catch((e) => e)) as Error;
+  expect(usage).toBeInstanceOf(UserError);
+  expect(usage.message).toMatch(/^usage:.*--provider <name>/);
+});
+
 test("fetch: --accept-slow is a flag, not the source; usage lists it", async () => {
   await call(["config", "init"]);
   const err = (await call(["fetch", "--accept-slow", "https://x.example/v"]).catch((e) => e)) as Error;

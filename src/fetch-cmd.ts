@@ -16,7 +16,8 @@ import { findSidecarSubs, resolveInputPath, resolveItemDir } from "./paths";
 import { type Cue, type Fetcher, type Platform, type Runner, UserError } from "./types";
 import { downloadAudio, downloadSubs, fetchMeta, pickAutoTrack, pickManualTrack } from "./ytdlp";
 
-export type FetchFlags = { diarize: boolean; force?: boolean; acceptSlow?: boolean };
+/** `provider`: recognize only with this configured provider (no fallback to the others). */
+export type FetchFlags = { diarize: boolean; force?: boolean; acceptSlow?: boolean; provider?: string };
 export type FetchDeps = {
   run: Runner; fetch: Fetcher; cfg: Config; env: Record<string, string | undefined>;
   now: Date; cwd: string; home: string;
@@ -68,7 +69,7 @@ async function readSubs(file: string): Promise<Cue[]> {
 async function recognize(
   getAudio: () => Promise<string>, work: string, item: Item, flags: FetchFlags, d: FetchDeps,
 ): Promise<{ asr: AsrResult; failed: string[] }> {
-  const providers = d.cfg.providers.map(resolveProvider);
+  const providers = d.cfg.providers.filter((p) => !flags.provider || p.name === flags.provider).map(resolveProvider);
   const local = providers.some((p) => p.type === "local") ? localStatus(d) : undefined;
   const candidates: Candidate[] = await probeProviders(providers, d.fetch, d.env, d.home, local);
   const language = primaryLang(item.language);
@@ -149,6 +150,10 @@ async function noteSpeed(file: string, key: string, durationSec: number, elapsed
 const looksLikeLink = (s: string): boolean => /^[a-z0-9-]+(\.[a-z0-9-]+)+\/\S*/i.test(s);
 
 export async function fetchCmd(input: string, flags: FetchFlags, d: FetchDeps): Promise<FetchResult> {
+  if (flags.provider && !d.cfg.providers.some((p) => p.name === flags.provider)) {
+    const names = d.cfg.providers.map((p) => p.name).join(", ") || "none";
+    throw new UserError(`unknown provider ${JSON.stringify(flags.provider)} (configured: ${names})`);
+  }
   const isUrl = /^https?:\/\//i.test(input);
   let item: Item;
   let get: (work: string) => Promise<Got>;
@@ -213,7 +218,9 @@ export async function fetchCmd(input: string, flags: FetchFlags, d: FetchDeps): 
   const transcriptPath = join(dir, "transcript.md");
   const summaryPath = join(dir, "summary.md");
   // Text already exists: do not download or transcribe again (long ASR takes minutes).
-  if (prev?.source && existsSync(transcriptPath) && !flags.force) {
+  // A transcript recognized by another provider is redone when a provider is named.
+  const otherProvider = !!flags.provider && prev?.source === "asr" && prev.asr_provider !== flags.provider;
+  if (prev?.source && existsSync(transcriptPath) && !flags.force && !otherProvider) {
     return toResult(prev, dir, transcriptPath, summaryPath);
   }
   const work = join(dir, ".work");
