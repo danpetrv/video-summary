@@ -83,7 +83,7 @@ function providerName(raw, path, seen) {
   seen.add(name);
   return name;
 }
-var LOCAL_KEYS = ["name", "type", "engine", "model", "device"];
+var LOCAL_KEYS = ["name", "type", "engine", "model", "device", "diarize"];
 var REMOTE_KEYS = ["url", "diarize", "keyFile", "keyEnv", "preset", ...REMOVED_PROVIDER_KEYS];
 function oneOf(o, k, allowed, path) {
   const v = o[k];
@@ -103,7 +103,8 @@ function parseLocal(raw, path, seen) {
     type: "local",
     engine: oneOf(raw, "engine", ["parakeet"], path),
     model: oneOf(raw, "model", ["ultra"], path),
-    device: oneOf(raw, "device", ["auto", "cpu"], path)
+    device: oneOf(raw, "device", ["auto", "cpu"], path),
+    diarize: optBool(raw, "diarize", path) ?? true
   };
 }
 var hasLegacyKeys = (raw) => isObj(raw) && raw.type !== "local" && (raw.preset !== undefined || REMOVED_PROVIDER_KEYS.some((k) => raw[k] !== undefined) || raw.type === "openai-compatible" && raw.diarize !== undefined);
@@ -369,6 +370,9 @@ function localMissing(s) {
   if (!s.installed) {
     out.push({ name: "parakeet", install: "sh <skill-dir>/scripts/video-summary local install", needsSudo: false, note: "~0.9 GB download" });
   }
+  if (s.installed && s.diarization && !s.diarization.verified) {
+    out.push({ name: "diarization-model", install: "sh <skill-dir>/scripts/video-summary local install", needsSudo: false, note: "~0.1 GB download; enables speaker labels", optional: true });
+  }
   if (s.hint) {
     out.push({ name: "libvulkan1", install: "sudo apt install libvulkan1", needsSudo: true, note: "enables GPU recognition; run local install again afterwards", optional: true });
   }
@@ -388,7 +392,7 @@ function resolveProvider(p) {
       type: "local",
       url: null,
       model: p.model,
-      diarize: false,
+      diarize: p.diarize,
       keyFile: null,
       keyEnv: null,
       engine: p.engine,
@@ -510,8 +514,8 @@ function planBuilds(o) {
   return { gpu: auto && o.vulkanLib ? `linux-vulkan-${o.arch}` : null, cpu: `linux-cpu-${o.arch}` };
 }
 
-// src/local/paths.ts
-import { join as join2 } from "node:path";
+// src/local/diarize.ts
+import { statSync } from "node:fs";
 
 // src/local/pins.ts
 var PARAKEET_VERSION = "v0.6.1";
@@ -560,6 +564,12 @@ var MODEL = {
   size: 941517728,
   sha256: "c2fb452a9df468a141012b01c8c168a25ce93f710897c7de6e353c6cc250986a"
 };
+var DIAR_MODEL = {
+  file: "nemotron-3-diarization-q8_0.gguf",
+  url: "https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/741158ae71e64ef5c89385862c18f777d07a97a1/nemotron-3-diarization-q8_0.gguf",
+  size: 108674624,
+  sha256: "76c5bb1fb20d82706142ad32769b7ab496d2458489473a000fd7074c52ceec22"
+};
 var LANGUAGES = [
   "bg",
   "hr",
@@ -588,7 +598,96 @@ var LANGUAGES = [
   "uk"
 ];
 
+// src/local/diarize.ts
+function diarModelReady(paths, size = DIAR_MODEL.size) {
+  try {
+    return statSync(paths.diarModel).size === size;
+  } catch {
+    return false;
+  }
+}
+var NEAREST_SEC = 0.5;
+var EPS = 0.000001;
+function parseScene(stdout) {
+  const segs = [];
+  for (const [i, line] of stdout.split(`
+`).entries()) {
+    if (!line.trim())
+      continue;
+    let ev;
+    try {
+      ev = JSON.parse(line);
+    } catch {
+      throw new Error(`scene output line ${i + 1} is not JSON`);
+    }
+    const list = ev?.speakers;
+    if (list === undefined)
+      continue;
+    if (!Array.isArray(list))
+      throw new Error(`scene output line ${i + 1}: speakers is not an array`);
+    for (const s of list) {
+      if (!Number.isFinite(s?.speaker) || !Number.isFinite(s?.start) || !Number.isFinite(s?.end)) {
+        throw new Error(`scene output line ${i + 1}: malformed speaker segment`);
+      }
+      segs.push({ speaker: s.speaker, start: s.start, end: s.end });
+    }
+  }
+  return segs;
+}
+function assignSpeakers(words, segs) {
+  const sorted = [...segs].sort((a, b) => a.start - b.start);
+  const ids = [];
+  let prev = null;
+  for (const word of words) {
+    let id = null;
+    let best = 0;
+    for (const s of sorted) {
+      const overlap = Math.min(word.end, s.end) - Math.max(word.start, s.start);
+      if (overlap > best + EPS) {
+        best = overlap;
+        id = s.speaker;
+      }
+    }
+    if (id === null) {
+      let nearest = Infinity;
+      for (const s of sorted) {
+        const gap = Math.max(0, s.start - word.end, word.start - s.end);
+        if (gap < nearest - EPS) {
+          nearest = gap;
+          if (gap <= NEAREST_SEC + EPS)
+            id = s.speaker;
+        }
+      }
+    }
+    id ??= prev;
+    ids.push(id);
+    prev = id;
+  }
+  const first = ids.find((x) => x !== null);
+  if (first !== undefined) {
+    for (let i = 0;ids[i] === null; i++)
+      ids[i] = first;
+  }
+  return ids;
+}
+function labelSpeakers(words, ids) {
+  const order = new Map;
+  for (const id of ids)
+    if (id !== null && !order.has(id))
+      order.set(id, order.size + 1);
+  if (order.size < 2)
+    return { words, speakers: order.size };
+  return {
+    words: words.map((word, i) => {
+      const id = ids[i];
+      return id === null || id === undefined ? word : { ...word, speaker: `Speaker ${order.get(id)}` };
+    }),
+    speakers: order.size
+  };
+}
+
 // src/local/paths.ts
+import { join as join2 } from "node:path";
 function localPaths(env, home) {
   const data = env.XDG_DATA_HOME || join2(home, ".local", "share");
   const cache = env.XDG_CACHE_HOME || join2(home, ".cache");
@@ -598,6 +697,7 @@ function localPaths(env, home) {
     binDir,
     cli: (build) => join2(binDir(build), "parakeet-cli"),
     model: join2(cache, "video-summary", "models", MODEL.file),
+    diarModel: join2(cache, "video-summary", "models", DIAR_MODEL.file),
     speedFile: join2(state, "video-summary", "speed.json")
   };
 }
@@ -608,7 +708,7 @@ var MAX_CUE_SEC = 30;
 var PAUSE_SEC = 1;
 var SENTENCE_END = /[.?!…]$/;
 var UNK = "<unk>";
-var EPS = 0.000001;
+var EPS2 = 0.000001;
 var VULKAN_DEVICE = /pk::Backend using device: Vulkan\d+/;
 function wordsToCues(words) {
   const cues = [];
@@ -617,7 +717,7 @@ function wordsToCues(words) {
     const text = word.w.replaceAll(UNK, "").trim();
     if (!text)
       continue;
-    if (cur && (word.start - cur.end >= PAUSE_SEC - EPS || word.end - cur.start > MAX_CUE_SEC + EPS)) {
+    if (cur && (word.start - cur.end >= PAUSE_SEC - EPS2 || word.end - cur.start > MAX_CUE_SEC + EPS2 || cur.speaker !== word.speaker)) {
       cues.push(cur);
       cur = null;
     }
@@ -626,6 +726,8 @@ function wordsToCues(words) {
       cur.end = word.end;
     } else {
       cur = { start: word.start, end: word.end, text };
+      if (word.speaker !== undefined)
+        cur.speaker = word.speaker;
     }
     if (SENTENCE_END.test(text)) {
       cues.push(cur);
@@ -656,20 +758,59 @@ function runBuilds(p, d) {
   return { gpu, cpu: plan.cpu ?? plan.gpu };
 }
 var plannedDevice = (p, d) => runBuilds(p, d).gpu ? "gpu" : "cpu";
-async function transcribeParakeet(ogg, p, d) {
-  const paths = localPaths(d.env, d.home);
-  const { gpu: gpuBuild, cpu: cpuBuild } = runBuilds(p, d);
-  const wav = `${ogg.replace(/\.[^./]*$/, "")}.wav`;
-  const threads = String(Math.min(availableParallelism(), 8));
+function timedRunner(d, cli) {
   const clock = d.clock ?? Date.now;
   let pathStarted = null;
-  const transcribe = async (build, env) => {
+  return async (build, args, env) => {
     const started = clock();
     pathStarted ??= started;
-    const r = await d.run([paths.cli(build), "transcribe", "--model", paths.model, "--input", wav, "--vad", "--json", "--threads", threads], env ? { timeoutMs: LOCAL_TIMEOUT_MS, env } : { timeoutMs: LOCAL_TIMEOUT_MS });
+    const r = await d.run([cli(build), ...args], env ? { timeoutMs: LOCAL_TIMEOUT_MS, env } : { timeoutMs: LOCAL_TIMEOUT_MS });
     const ended = clock();
     return { ...r, elapsedMs: ended - started, pathElapsedMs: ended - pathStarted };
   };
+}
+async function diarizeWords(p, words, run, a, notes) {
+  const skipped = (why) => {
+    notes.push(`${p.name}: speaker labels skipped — ${why}`);
+    return { words, diarized: false, speakers: 0 };
+  };
+  const args = ["scene", "--diar", a.diarModel, "--input", a.wav, "--json"];
+  let device = a.device;
+  let r = device === "gpu" ? await run(a.gpuBuild, args) : await run(a.cpuBuild, args, a.cpuEnv);
+  if (r.code !== 0 && r.code !== 124 && device === "gpu") {
+    const gpuError = lastLine(r);
+    device = "cpu";
+    r = await run(a.cpuBuild, args, a.cpuEnv);
+    if (r.code === 0)
+      notes.push(`${p.name}: GPU diarization failed (${gpuError}), used CPU`);
+  }
+  if (r.code === 124)
+    return skipped("diarization timed out");
+  if (r.code !== 0)
+    return skipped(`diarization failed (${lastLine(r)})`);
+  let labeled;
+  try {
+    labeled = labelSpeakers(words, assignSpeakers(words, parseScene(r.stdout)));
+  } catch {
+    return skipped("unexpected parakeet-cli scene output");
+  }
+  if (labeled.speakers === 0)
+    return skipped("no speech segments found");
+  return {
+    ...labeled,
+    diarized: true,
+    diarization: { device, plannedDevice: a.plannedDevice, elapsedMs: r.elapsedMs, pathElapsedMs: r.pathElapsedMs }
+  };
+}
+async function transcribeParakeet(ogg, p, d, o) {
+  const paths = localPaths(d.env, d.home);
+  const { gpu: gpuBuild, cpu: cpuBuild } = runBuilds(p, d);
+  const cpuEnv = BUILDS[cpuBuild].gpu ? { PARAKEET_DEVICE: "cpu" } : undefined;
+  const planned = gpuBuild ? "gpu" : "cpu";
+  const wav = `${ogg.replace(/\.[^./]*$/, "")}.wav`;
+  const threads = String(Math.min(availableParallelism(), 8));
+  const transcribe = timedRunner(d, paths.cli);
+  const args = ["transcribe", "--model", paths.model, "--input", wav, "--vad", "--json", "--threads", threads];
   const timedOut = () => new UserError(`${p.name}: timed out after ${LOCAL_TIMEOUT_MS / 1000} s`);
   try {
     const conv = await d.run([
@@ -698,13 +839,13 @@ async function transcribeParakeet(ogg, p, d) {
     let device = "cpu";
     let r = null;
     if (gpuBuild) {
-      const g = await transcribe(gpuBuild);
+      const g = await transcribe(gpuBuild, args);
       if (g.code === 124)
         throw timedOut();
       if (g.code === 0) {
         r = g;
         if (gpuBuild.startsWith("linux-vulkan-") && !VULKAN_DEVICE.test(g.stderr)) {
-          notes.push(`${p.name}: no GPU device found, ran on CPU`);
+          notes.push(`${p.name}: no GPU device found, ran on CPU — set "device": "cpu" for ${p.name} to skip the GPU attempt`);
         } else {
           device = "gpu";
         }
@@ -713,26 +854,44 @@ async function transcribeParakeet(ogg, p, d) {
       }
     }
     if (!r) {
-      r = await transcribe(cpuBuild, BUILDS[cpuBuild].gpu ? { PARAKEET_DEVICE: "cpu" } : undefined);
+      r = await transcribe(cpuBuild, args, cpuEnv);
       if (r.code === 124)
         throw timedOut();
       if (r.code !== 0)
         throw new UserError(`${p.name}: parakeet-cli failed (${lastLine(r)})`);
     }
-    const cues = wordsToCues(parseWords(p.name, r.stdout));
-    if (cues.length === 0)
+    const words = parseWords(p.name, r.stdout);
+    if (wordsToCues(words).length === 0)
       throw new UserError(`${p.name}: no speech recognized`);
+    let dz = { words, diarized: false, speakers: 0 };
+    if (o.diarize) {
+      if (diarModelReady(paths)) {
+        dz = await diarizeWords(p, words, timedRunner(d, paths.cli), {
+          diarModel: paths.diarModel,
+          wav,
+          device,
+          plannedDevice: planned,
+          gpuBuild,
+          cpuBuild,
+          cpuEnv
+        }, notes);
+      } else {
+        notes.push(`${p.name}: speaker labels skipped — diarization model not installed, run \`local install\``);
+      }
+    }
     const out = {
-      cues,
+      cues: wordsToCues(dz.words),
       provider: p.name,
-      diarized: false,
-      speakers: 0,
+      diarized: dz.diarized,
+      speakers: dz.speakers,
       language: null,
       device,
       elapsedMs: r.elapsedMs,
-      plannedDevice: gpuBuild ? "gpu" : "cpu",
+      plannedDevice: planned,
       pathElapsedMs: r.pathElapsedMs
     };
+    if (dz.diarization)
+      out.diarization = dz.diarization;
     if (notes.length)
       out.notes = notes;
     return out;
@@ -747,7 +906,9 @@ import { mkdir as mkdir2, readFile as readFile2, rename, rm as rm2, writeFile as
 import { dirname as dirname2 } from "node:path";
 var SLOW_MINUTES = 10;
 var DEFAULT_SPEED = { cpu: 8, gpu: 60 };
+var DEFAULT_DIAR_SPEED = { cpu: 16, gpu: 100 };
 var speedKey = (p, device) => `${p.engine}:${p.model}:${device}`;
+var diarSpeedKey = (device) => `parakeet:diar:${device}`;
 async function readSpeeds(file) {
   let data;
   try {
@@ -773,9 +934,13 @@ async function recordSpeed(file, key, measured) {
     await rm2(tmp, { force: true });
   }
 }
-function estimateLocal(p, durationSec, speeds, plannedDevice) {
+function estimateLocal(p, durationSec, speeds, plannedDevice, diarize) {
   const speed = speeds[speedKey(p, plannedDevice)] ?? DEFAULT_SPEED[plannedDevice];
-  return { minutes: durationSec / speed / 60, device: plannedDevice, speed };
+  const minutes = durationSec / speed / 60;
+  if (!diarize)
+    return { minutes, device: plannedDevice, speed };
+  const diarSpeed = speeds[diarSpeedKey(plannedDevice)] ?? DEFAULT_DIAR_SPEED[plannedDevice];
+  return { minutes: minutes + durationSec / diarSpeed / 60, device: plannedDevice, speed, withoutDiarization: minutes };
 }
 
 // src/asr/openai-compatible.ts
@@ -959,7 +1124,7 @@ async function whisperxHealthy(url, f, key) {
 function parseWhisperx(json, provider) {
   const body = json;
   const names = new Map;
-  const cues = (body.segments ?? []).map((s) => {
+  const labeled = (body.segments ?? []).map((s) => {
     const cue = { start: s.start, end: s.end, text: s.text.trim() };
     if (!s.speaker)
       return cue;
@@ -967,6 +1132,7 @@ function parseWhisperx(json, provider) {
       names.set(s.speaker, `Speaker ${names.size + 1}`);
     return { ...cue, speaker: names.get(s.speaker) };
   });
+  const cues = labeled.map((c) => names.size === 1 ? { start: c.start, end: c.end, text: c.text } : c);
   return { cues, provider, diarized: names.size > 0, speakers: names.size, language: normalizeLanguage(body.language) };
 }
 async function transcribeWhisperx(file, o, p, key, f) {
@@ -1010,6 +1176,10 @@ function reject(c, i) {
   if (c.provider.type === "local" && !i.acceptSlow) {
     const e = i.estimate(c.provider, i.durationSec);
     if (e && e.minutes > SLOW_MINUTES) {
+      if (e.withoutDiarization !== undefined) {
+        const withLabels = `~${Math.ceil(e.minutes)} min on ${e.device.toUpperCase()} with speaker labels (~${Math.ceil(e.withoutDiarization)} without); add --accept-slow to wait`;
+        return e.withoutDiarization <= SLOW_MINUTES ? `${withLabels}, or --no-diarize to skip speaker labels` : withLabels;
+      }
       return `~${Math.ceil(e.minutes)} min on ${e.device.toUpperCase()} (measured speed ${Math.round(e.speed)}x); add --accept-slow to wait`;
     }
   }
@@ -1028,8 +1198,9 @@ function chooseProvider(i) {
   return { error: `no ASR provider fits: ${reasons.join("; ")}` };
 }
 async function transcribeWith(p, file, o, d) {
-  if (p.type === "local")
-    return { ...await transcribeParakeet(file, p, d), language: o.language };
+  if (p.type === "local") {
+    return { ...await transcribeParakeet(file, p, d, { diarize: o.diarize && p.diarize }), language: o.language };
+  }
   const key = await readKey(p, d.env, d.home);
   return p.type === "whisperx" ? transcribeWhisperx(file, o, p, key, d.fetch) : transcribeOpenAI(file, o, p, key, d.fetch);
 }
@@ -1180,10 +1351,10 @@ function dedupeRolling(cues) {
 
 // src/local/install.ts
 import { createHash, randomBytes as randomBytes2 } from "node:crypto";
-import { createReadStream, statSync } from "node:fs";
+import { createReadStream, statSync as statSync2 } from "node:fs";
 import { mkdir as mkdir3, mkdtemp, open, readdir, rename as rename3, rm as rm4, stat } from "node:fs/promises";
 import { basename, dirname as dirname3, join as join3 } from "node:path";
-var DEFAULT_PINS = { BUILDS, MODEL };
+var DEFAULT_PINS = { BUILDS, MODEL, DIAR_MODEL };
 var DOWNLOAD_IDLE_MS = 60000;
 function plannedBuilds(d, vulkanLib) {
   const p = planBuilds({ platform: d.platform, arch: d.arch, vulkanLib, device: "auto" });
@@ -1201,6 +1372,7 @@ function localStatus(d, pins = DEFAULT_PINS) {
     version: PARAKEET_VERSION,
     builds,
     model: { present, verified, path: paths.model },
+    diarization: { present: d.exists(paths.diarModel), verified: diarModelReady(paths, pins.DIAR_MODEL.size), path: paths.diarModel },
     vulkan_lib: vulkanLib
   };
   if (d.platform === "linux" && !vulkanLib && d.has("nvidia-smi"))
@@ -1214,7 +1386,14 @@ async function localInstall(d, pins = DEFAULT_PINS) {
   for (const b of builds)
     downloaded += await ensureBuild(d, paths, b, pins.BUILDS[b]);
   downloaded += await ensureModel(d, paths.model, pins.MODEL);
-  return { version: PARAKEET_VERSION, builds, model: { path: paths.model, bytes: pins.MODEL.size }, downloaded_bytes: downloaded };
+  downloaded += await ensureModel(d, paths.diarModel, pins.DIAR_MODEL);
+  return {
+    version: PARAKEET_VERSION,
+    builds,
+    model: { path: paths.model, bytes: pins.MODEL.size },
+    diar_model: { path: paths.diarModel, bytes: pins.DIAR_MODEL.size },
+    downloaded_bytes: downloaded
+  };
 }
 async function ensureBuild(d, paths, build, pin) {
   const cli = paths.cli(build);
@@ -1258,11 +1437,19 @@ async function ensureModel(d, path, pin) {
   return bytes;
 }
 var mismatch = (file) => new UserError(`downloaded ${file} does not match the pinned checksum — retry \`local install\``);
-async function net(file, p) {
+
+class NetDrop extends Error {
+  tag;
+  constructor(tag) {
+    super(tag);
+    this.tag = tag;
+  }
+}
+async function net(p) {
   try {
     return await p();
   } catch (e) {
-    throw new UserError(`could not download ${file}: ${netErrorTag(e)}`);
+    throw new NetDrop(netErrorTag(e));
   }
 }
 async function idle(p, ms, ac) {
@@ -1280,33 +1467,52 @@ async function idle(p, ms, ac) {
     clearTimeout(timer);
   }
 }
+var DOWNLOAD_RETRIES = 3;
 async function download(d, url, target, pin, file) {
   const part = `${target}.${randomBytes2(6).toString("hex")}.part`;
-  const hash = createHash("sha256");
-  const ac = new AbortController;
   const idleMs = d.downloadIdleMs ?? DOWNLOAD_IDLE_MS;
+  let hash = createHash("sha256");
   let bytes = 0;
   const fh = await open(part, "wx");
   try {
     try {
-      const res = await net(file, () => idle(d.fetch(url, { signal: ac.signal }), idleMs, ac));
-      if (!res.ok) {
-        await res.body?.cancel().catch(() => {});
-        throw new UserError(`could not download ${file}: HTTP ${res.status}`);
-      }
-      const reader = res.body?.getReader();
-      for (;; ) {
-        const chunk = reader ? await net(file, () => idle(reader.read(), idleMs, ac)) : { done: true, value: undefined };
-        if (chunk.done)
+      for (let attempt = 0;; attempt++) {
+        const ac = new AbortController;
+        try {
+          const headers = bytes > 0 ? { range: `bytes=${bytes}-` } : {};
+          const res = await net(() => idle(d.fetch(url, { signal: ac.signal, headers }), idleMs, ac));
+          if (!res.ok) {
+            await res.body?.cancel().catch(() => {});
+            throw new UserError(`could not download ${file}: HTTP ${res.status}`);
+          }
+          if (res.status !== 206 && bytes > 0) {
+            await fh.truncate(0);
+            bytes = 0;
+            hash = createHash("sha256");
+          }
+          const reader = res.body?.getReader();
+          for (;; ) {
+            const chunk = reader ? await net(() => idle(reader.read(), idleMs, ac)) : { done: true, value: undefined };
+            if (chunk.done)
+              break;
+            if (bytes + chunk.value.length > pin.size) {
+              await reader.cancel().catch(() => {});
+              throw mismatch(file);
+            }
+            hash.update(chunk.value);
+            for (let off = 0;off < chunk.value.length; ) {
+              off += (await fh.write(chunk.value, off, chunk.value.length - off, bytes + off)).bytesWritten;
+            }
+            bytes += chunk.value.length;
+          }
           break;
-        bytes += chunk.value.length;
-        if (bytes > pin.size) {
-          await reader.cancel().catch(() => {});
-          throw mismatch(file);
+        } catch (e) {
+          if (!(e instanceof NetDrop))
+            throw e;
+          ac.abort(e);
+          if (attempt >= DOWNLOAD_RETRIES)
+            throw new UserError(`could not download ${file}: ${e.tag}`);
         }
-        hash.update(chunk.value);
-        for (let off = 0;off < chunk.value.length; )
-          off += (await fh.write(chunk.value, off)).bytesWritten;
       }
     } finally {
       await fh.close();
@@ -1340,7 +1546,7 @@ async function verify(path, pin) {
 }
 function sizeOf(path) {
   try {
-    return statSync(path).size;
+    return statSync2(path).size;
   } catch {
     return null;
   }
@@ -1530,7 +1736,7 @@ async function recognize(getAudio, work, item, flags, d) {
   const language = primaryLang(item.language);
   const speedFile = localPaths(d.env, d.home).speedFile;
   const speeds = local ? await readSpeeds(speedFile) : {};
-  const estimate = (p, durationSec) => p.type === "local" ? estimateLocal(p, durationSec, speeds, plannedDevice(p, d)) : null;
+  const estimate = (p, durationSec) => p.type === "local" ? estimateLocal(p, durationSec, speeds, plannedDevice(p, d), flags.diarize && p.diarize && !!local?.diarization.verified) : null;
   const select = (cs, durationSec) => chooseProvider({ candidates: cs, durationSec, language, acceptSlow: flags.acceptSlow ?? false, estimate });
   const pick = (durationSec) => {
     const c = select(candidates, durationSec);
@@ -1564,6 +1770,12 @@ async function recognize(getAudio, work, item, flags, d) {
         if (asr.plannedDevice && asr.plannedDevice !== asr.device && asr.pathElapsedMs !== undefined) {
           await noteSpeed(speedFile, speedKey(provider, asr.plannedDevice), durationSec, asr.pathElapsedMs);
         }
+      }
+      if (provider.type === "local" && asr.diarization) {
+        const dz = asr.diarization;
+        await noteSpeed(speedFile, diarSpeedKey(dz.device), durationSec, dz.elapsedMs);
+        if (dz.plannedDevice !== dz.device)
+          await noteSpeed(speedFile, diarSpeedKey(dz.plannedDevice), durationSec, dz.pathElapsedMs);
       }
       return { asr, failed: [...failed, ...asr.notes ?? []] };
     } catch (e) {
@@ -1667,8 +1879,9 @@ async function fetchCmd(input, flags, d) {
 `);
   const transcriptPath = join7(dir, "transcript.md");
   const summaryPath = join7(dir, "summary.md");
-  if (prev?.source && existsSync(transcriptPath) && !flags.force)
-    return toResult(prev, dir, transcriptPath, summaryPath);
+  if (prev?.source && existsSync(transcriptPath) && !flags.force) {
+    return withWarnings(toResult(prev, dir, transcriptPath, summaryPath), d.warnings);
+  }
   const work = join7(dir, ".work");
   await mkdir5(work, { recursive: true });
   const got = await get(work);
@@ -1696,9 +1909,10 @@ async function fetchCmd(input, flags, d) {
     thumbnail: item.thumbnail
   };
   await writeMeta(dir, meta);
-  const result = toResult(meta, dir, transcriptPath, summaryPath);
+  const result = withWarnings(toResult(meta, dir, transcriptPath, summaryPath), d.warnings);
   return got.asrFailed?.length ? { ...result, asr_failed: got.asrFailed } : result;
 }
+var withWarnings = (r, warnings) => warnings?.length ? { ...r, warnings } : r;
 function toResult(meta, dir, transcriptPath, summaryPath) {
   return {
     dir,
@@ -3386,8 +3600,8 @@ async function finalizeSummary(dir) {
 // src/cli.ts
 var USAGE = "usage: video-summary check | config path|get [key]|init [--force]|set <key> <json> | " + "fetch <url|path> [--no-diarize] [--force] [--accept-slow] | finalize <dir> | readeck <dir> | local install|status";
 var NO_CONFIG = "no config — run setup (see references/setup.md)";
-async function requireConfig(path) {
-  const cfg = await loadConfig(path);
+async function requireConfig(path, warnings) {
+  const cfg = await loadConfig(path, warnings);
   if (!cfg)
     throw new UserError(NO_CONFIG);
   return cfg;
@@ -3483,7 +3697,8 @@ async function main(argv, d) {
       const src = rest.find((a) => !a.startsWith("--"));
       if (!src)
         throw new UserError(USAGE);
-      const cfg = await requireConfig(path);
+      const warnings = [];
+      const cfg = await requireConfig(path, warnings);
       const flags = {
         diarize: !rest.includes("--no-diarize"),
         force: rest.includes("--force"),
@@ -3500,7 +3715,8 @@ async function main(argv, d) {
         platform: d.platform,
         arch: d.arch,
         exists: d.exists,
-        has: d.has
+        has: d.has,
+        warnings
       });
     }
     case "finalize": {
