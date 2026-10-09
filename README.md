@@ -63,10 +63,6 @@ labels. To skip the labels, use `fetch --no-diarize` or `"diarize": false` on th
 provider; it also makes a CPU run faster. If the labeling fails, you get the transcript
 without labels and a note why. Upgrading from v0.4 downloads only the extra model.
 
-Cloud providers (the Groq and OpenAI presets) were removed in v0.4.0. An old config keeps
-working: cloud providers and removed settings (`bitrate`, `tier`, ...) are skipped with a
-warning, and the agent offers to clean the config.
-
 ## Privacy
 
 Subtitles are fetched directly from the site. Audio is recognized only on your machines:

@@ -25,7 +25,7 @@ Rules that always apply:
 
 ## 1. Check
 
-`check` returns `{ok, runtime, deps{missing[], stale[]}, config{exists, valid, path, error?, warnings[]}, providers[], readeck}`;
+`check` returns `{ok, runtime, deps{missing[], stale[]}, config{exists, valid, path, error?}, providers[], readeck}`;
 `readeck` is `"configured"` or `"disabled"`.
 
 - Runtime missing or unsupported (the launcher prints `{"ok":false,"runtime":"missing"|"unsupported","install":[...]}`): ask **one
@@ -50,18 +50,6 @@ Rules that always apply:
     `! sudo apt install libvulkan1`, then run `local install` again.
 - `deps.stale` (old yt-dlp): offer the `upgrade` command (same `needsSudo` rule), do not block.
 - An item in `deps.missing` or `deps.stale` may carry a `note` (e.g. `pipx ensurepath`): show it with the command.
-- `config.warnings` not empty: the config has settings removed in v0.4.0 (cloud providers
-  Groq/OpenAI, `bitrate`, `tier`, ...); they are ignored, the rest works. Show the warnings
-  and offer to clean the config: any `config set` saves the cleaned config (e.g. read
-  `config get summaryLength` and set the same value back). If no provider is left, or a
-  removed cloud provider was a fallback, offer to add the local provider
-  (`references/setup.md`, speech recognition). Add it, never replace the list: read
-  `config get providers`, keep every provider still there in its order, append
-  `{"name":"local","type":"local"}` (skip if a `local` provider is already there) and
-  `config set providers` with the result. Never drop a `whisperx` or `openai-compatible`
-  provider. A warning `... now treated as your own server — local files are sent to it
-  without asking` names a provider that v0.3 kept away from local files: tell the user;
-  remove it only if they say it is not their server.
 - `config.exists: false`: read `references/setup.md` and walk the user through the
   setup, then `check` again.
 - `config.exists: true, valid: false`: the config is broken. Show the user
@@ -98,7 +86,6 @@ server or in the local engine).
 Result: `dir`, `transcript_path`, `summary_path`, `summary_exists`, `source`
 (`youtube-manual-subs`, `manual-subs`, `youtube-auto-subs`, `sidecar-subs`, `asr`),
 `asr_provider`, `diarized`, `speakers`, `language`, `duration`, `transcript_tokens`, `url`,
-`warnings` when the config has migration warnings (relay them to the user as in step 1),
 and `asr_failed` when a provider failed and the next one recognized the audio, or left a
 note: tell the user which provider failed and why. A note like
 `local: GPU run failed (...), used CPU` means the text is there but recognition ran on the
