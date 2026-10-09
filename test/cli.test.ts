@@ -307,3 +307,28 @@ test("malformed key never reaches stdout/stderr of the real CLI (check, readeck)
     expect(out).toContain(`key in file ${keyFile} contains whitespace or control characters`);
   }
 }, 20_000);
+
+test("fetch returns config migration warnings (v0.3 openai-compatible without `local`); a clean config has none", async () => {
+  const out = join(root, `out-${n}`);
+  const media = join(root, `clip-${n}.mp4`);
+  writeFileSync(media, "x");
+  writeFileSync(join(root, `clip-${n}.srt`), "1\n00:00:01,000 --> 00:00:04,500\nHello there.\n");
+  const run = async (cmd: string[]) =>
+    cmd[0] === "ffprobe" ? { code: 0, stdout: "10\n", stderr: "" } : { code: 127, stdout: "", stderr: "" };
+  writeFileSync(cfgFile, JSON.stringify({
+    outputDir: out, bitrate: 32,
+    providers: [{ name: "own", type: "openai-compatible", url: "http://own.example/v1", model: "m" }],
+  }));
+  const r = (await call(["fetch", media], { run })) as any;
+  expect(r.source).toBe("sidecar-subs");
+  expect(r.warnings).toEqual([
+    "bitrate: removed in v0.4.0 — ignored",
+    'providers[0] "own": now treated as your own server — local files are sent to it without asking',
+  ]);
+  // a repeat takes the early "already exists" path and still carries them
+  expect(((await call(["fetch", media], { run })) as any).warnings).toEqual(r.warnings);
+
+  writeFileSync(cfgFile, JSON.stringify({ outputDir: out, providers: [] }));
+  const clean = (await call(["fetch", media, "--force"], { run })) as any;
+  expect("warnings" in clean).toBe(false);
+});

@@ -636,3 +636,29 @@ test("#3: auto captions fail and no ASR provider → one error naming both reaso
   expect(err.message).toContain("HTTP Error 429");
   expect(err.message).toContain("no ASR providers configured");
 });
+
+test("config warnings from deps are returned by fetch, also on the early 'text already exists' return", async () => {
+  const warnings = ['providers[0] "own": now treated as your own server — local files are sent to it without asking'];
+  const r = await fetchCmd(URL1, flags, { ...deps(), warnings });
+  expect(r.warnings).toEqual(warnings);
+  const again = await fetchCmd(URL1, flags, { ...deps(), warnings });
+  expect(again.dir).toBe(r.dir);
+  expect(again.warnings).toEqual(warnings);
+});
+
+test("no config warnings -> no `warnings` key (absent and empty)", async () => {
+  const r = await fetchCmd(URL1, flags, deps());
+  expect("warnings" in r).toBe(false);
+  const again = await fetchCmd(URL1, flags, { ...deps(), warnings: [] });
+  expect("warnings" in again).toBe(false);
+  const forced = await fetchCmd(URL1, { ...flags, force: true }, { ...deps(), warnings: [] });
+  expect("warnings" in forced).toBe(false);
+});
+
+test("warnings sit next to asr_failed without replacing it", async () => {
+  const warnings = ["w"];
+  const r = await fetchCmd(URL1, flags, { ...deps({ meta: noMeta, asrStatus: 500 }), warnings });
+  expect(r.source).toBe("asr");
+  expect(r.asr_failed?.length).toBeGreaterThan(0);
+  expect(r.warnings).toEqual(warnings);
+});

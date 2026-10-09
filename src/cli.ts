@@ -21,8 +21,8 @@ const USAGE =
   "fetch <url|path> [--no-diarize] [--force] [--accept-slow] | finalize <dir> | readeck <dir> | local install|status";
 const NO_CONFIG = "no config — run setup (see references/setup.md)";
 
-async function requireConfig(path: string): Promise<Config> {
-  const cfg = await loadConfig(path);
+async function requireConfig(path: string, warnings?: string[]): Promise<Config> {
+  const cfg = await loadConfig(path, warnings);
   if (!cfg) throw new UserError(NO_CONFIG);
   return cfg;
 }
@@ -112,14 +112,15 @@ export async function main(argv: string[], d: CliDeps): Promise<unknown> {
     case "fetch": {
       const src = rest.find((a) => !a.startsWith("--"));
       if (!src) throw new UserError(USAGE);
-      const cfg = await requireConfig(path);
+      const warnings: string[] = [];
+      const cfg = await requireConfig(path, warnings);
       // --allow-cloud (v0.3 and older SKILL.md) is accepted and ignored, like any other unknown flag.
       const flags = {
         diarize: !rest.includes("--no-diarize"), force: rest.includes("--force"), acceptSlow: rest.includes("--accept-slow"),
       };
       return fetchCmd(src, flags, {
         run: d.run, fetch: d.fetch, cfg, env: d.env, now: d.now, cwd: d.cwd, home: d.home,
-        platform: d.platform, arch: d.arch, exists: d.exists, has: d.has,
+        platform: d.platform, arch: d.arch, exists: d.exists, has: d.has, warnings,
       });
     }
     case "finalize": {
