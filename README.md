@@ -9,16 +9,16 @@ local audio/video file into a structured markdown summary. The CLI gets the text
 subtitles, optionally auto captions, or speech recognition right on your machine), your
 agent writes the summary, and it can optionally be pushed to [Readeck](https://readeck.org).
 
-- [Install](#install)
-- [Usage](#usage): [summary size](#summary-size), [recognition provider](#recognition-provider), [what you get](#what-you-get)
-- [Requirements](#requirements)
-- [Speech recognition](#speech-recognition)
-- [Config](#config)
-- [CLI reference](#cli-reference)
-- [Privacy](#privacy)
-- [Development](#development)
+- [📦 Install](#-install)
+- [🚀 Usage](#-usage): [summary size](#summary-size), [recognition provider](#recognition-provider), [what you get](#what-you-get)
+- [🧰 Requirements](#-requirements)
+- [🎤 Speech recognition](#-speech-recognition)
+- [🔧 Config](#-config)
+- [💻 CLI reference](#-cli-reference)
+- [🔒 Privacy](#-privacy)
+- [🔨 Development](#-development)
 
-## Install
+## 📦 Install
 
 ```sh
 npx skills add danpetrv/video-summary
@@ -31,7 +31,7 @@ Readeck). For speech recognition it recommends the local engine: with your conse
 downloads it once (about 1 GB: the Parakeet Ultra model, the speaker-labeling model and
 parakeet.cpp binaries). No account and no API key are needed.
 
-## Usage
+## 🚀 Usage
 
 ```
 /video-summary <url|path> [size] [provider]
@@ -77,7 +77,7 @@ A provider name in the request (`/video-summary <url> local`, "recognize it loca
 "via my server") means: recognize this video only with that provider, with no fallback to
 the others. If it is unavailable or fails, you get the reason instead of a transcript from
 another provider. Subtitles still come first: recognition only runs when there are none.
-See [Speech recognition](#speech-recognition) for the providers.
+See [Speech recognition](#-speech-recognition) for the providers.
 
 ### What you get
 
@@ -100,7 +100,7 @@ The text comes from the first source that has it:
 3. YouTube auto captions, only with `"subtitles": "manual+auto"`;
 4. speech recognition.
 
-## Requirements
+## 🧰 Requirements
 
 - `yt-dlp` (with the `[default]` extra, for `yt-dlp-ejs`) and `ffmpeg`/`ffprobe`;
   for YouTube yt-dlp uses deno, node or bun as its JavaScript runtime (whichever is
@@ -113,7 +113,7 @@ The text comes from the first source that has it:
 
 The agent checks all of this (`check`) and offers to install what is missing.
 
-## Speech recognition
+## 🎤 Speech recognition
 
 Recognition is used when a video has no subtitles. Providers are tried in the order of the
 config; the first suitable one is used. If it fails during recognition (server error,
@@ -142,7 +142,7 @@ one speaker gets no labels. To skip the labels, say that one person speaks, or s
 you get the transcript without labels and a note why. Upgrading from v0.4 downloads only
 the extra model.
 
-## Config
+## 🔧 Config
 
 `${XDG_CONFIG_HOME:-~/.config}/video-summary/config.json`; `$VIDEO_SUMMARY_CONFIG`
 overrides the whole path. The agent writes it during the first-run setup; to change a
@@ -193,7 +193,7 @@ The local engine keeps its files in `${XDG_DATA_HOME:-~/.local/share}/video-summ
 (binaries), `${XDG_CACHE_HOME:-~/.cache}/video-summary/models/` (the models) and
 `${XDG_STATE_HOME:-~/.local/state}/video-summary/speed.json` (measured speed).
 
-## CLI reference
+## 💻 CLI reference
 
 You normally do not run the CLI yourself: the agent does. It is useful for debugging and
 for scripts. Run it through the launcher, which picks bun or node:
@@ -227,14 +227,14 @@ stderr.
 | `--accept-slow` | run local recognition even if it is estimated to take over 10 minutes |
 | `--force` | download and recognize again instead of returning the existing transcript |
 
-## Privacy
+## 🔒 Privacy
 
 Subtitles are fetched directly from the site. Audio is recognized only on your machines:
 by the local engine, or by your own server if you configure one (the skill does not check
 where a server's `url` points). Keys for your own servers live in key files or environment
 variables and are never stored in the config or printed.
 
-## Development
+## 🔨 Development
 
 ```sh
 bun install
@@ -264,7 +264,7 @@ skipped, and `Fixes #N` in a commit body becomes a link. A tag with a suffix
 Users of `npx skills add danpetrv/video-summary` get `main`; a release can be pinned with
 `npx skills add danpetrv/video-summary#v0.1.2`.
 
-## License
+## 📄 License
 
 MIT
 
